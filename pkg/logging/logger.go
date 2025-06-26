@@ -1,11 +1,14 @@
 package logging
 
 import (
+	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // LogLevel represents the logging level
@@ -26,6 +29,15 @@ type Config struct {
 	Level      LogLevel `yaml:"level" json:"level"`
 	Pretty     bool     `yaml:"pretty" json:"pretty"`
 	TimeFormat string   `yaml:"time_format" json:"time_format"`
+	
+	// File logging configuration
+	EnableFile   bool   `yaml:"enable_file" json:"enable_file"`
+	LogDir       string `yaml:"log_dir" json:"log_dir"`
+	LogFileName  string `yaml:"log_file_name" json:"log_file_name"`
+	MaxSize      int    `yaml:"max_size" json:"max_size"`         // Max size in MB before rotation
+	MaxBackups   int    `yaml:"max_backups" json:"max_backups"`   // Max number of old files to keep
+	MaxAge       int    `yaml:"max_age" json:"max_age"`           // Max days to keep old files
+	Compress     bool   `yaml:"compress" json:"compress"`         // Compress old files
 }
 
 // DefaultConfig returns a default logging configuration
@@ -34,6 +46,15 @@ func DefaultConfig() Config {
 		Level:      LevelInfo,
 		Pretty:     true,
 		TimeFormat: time.RFC3339,
+		
+		// File logging defaults
+		EnableFile:   true,
+		LogDir:       "logs",
+		LogFileName:  "backtester.log",
+		MaxSize:      10,    // 10MB
+		MaxBackups:   5,     // Keep 5 old files
+		MaxAge:       30,    // Keep files for 30 days
+		Compress:     true,  // Compress old files
 	}
 }
 
@@ -62,15 +83,49 @@ func Initialize(config Config) {
 	// Configure time format
 	zerolog.TimeFieldFormat = config.TimeFormat
 
-	// Configure output format
+	var writers []io.Writer
+
+	// Always add console output
 	if config.Pretty {
-		log.Logger = log.Output(zerolog.ConsoleWriter{
+		consoleWriter := zerolog.ConsoleWriter{
 			Out:        os.Stderr,
 			TimeFormat: time.RFC3339,
-		})
+		}
+		writers = append(writers, consoleWriter)
 	} else {
-		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
+		writers = append(writers, os.Stderr)
 	}
+
+	// Add file output if enabled
+	if config.EnableFile {
+		// Create log directory if it doesn't exist
+		if err := os.MkdirAll(config.LogDir, 0755); err != nil {
+			// If we can't create the log directory, log to stderr and continue
+			logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
+			logger.Error().Err(err).Str("log_dir", config.LogDir).Msg("Failed to create log directory")
+		} else {
+			// Set up rolling file logger
+			fileWriter := &lumberjack.Logger{
+				Filename:   filepath.Join(config.LogDir, config.LogFileName),
+				MaxSize:    config.MaxSize,
+				MaxBackups: config.MaxBackups,
+				MaxAge:     config.MaxAge,
+				Compress:   config.Compress,
+			}
+			writers = append(writers, fileWriter)
+		}
+	}
+
+	// Create multi-writer that writes to both console and file
+	var output io.Writer
+	if len(writers) == 1 {
+		output = writers[0]
+	} else {
+		output = io.MultiWriter(writers...)
+	}
+
+	// Configure the global logger
+	log.Logger = zerolog.New(output).With().Timestamp().Logger()
 }
 
 // GetLogger returns a logger with the specified component name
@@ -81,4 +136,22 @@ func GetLogger(component string) zerolog.Logger {
 // GetSubLogger returns a logger with additional context
 func GetSubLogger(parent zerolog.Logger, subComponent string) zerolog.Logger {
 	return parent.With().Str("subcomponent", subComponent).Logger()
+}
+
+// ConfigWithFileLogging creates a config with file logging enabled
+func ConfigWithFileLogging(level LogLevel, pretty bool, logDir string, fileName string) Config {
+	return Config{
+		Level:      level,
+		Pretty:     pretty,
+		TimeFormat: time.RFC3339,
+		
+		// File logging configuration
+		EnableFile:   true,
+		LogDir:       logDir,
+		LogFileName:  fileName,
+		MaxSize:      10,    // 10MB
+		MaxBackups:   5,     // Keep 5 old files
+		MaxAge:       30,    // Keep files for 30 days
+		Compress:     true,  // Compress old files
+	}
 }

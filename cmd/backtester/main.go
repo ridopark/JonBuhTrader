@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -27,15 +28,23 @@ func main() {
 		endDate        = flag.String("end", "2024-12-31", "End date (YYYY-MM-DD)")
 		initialCapital = flag.Float64("capital", 10000.0, "Initial capital")
 		timeframe      = flag.String("timeframe", "1m", "Timeframe (1m, 5m, 15m, 1h, 1d)")
-		logLevel       = flag.String("log-level", "info", "Log level (trace, debug, info, warn, error)")
-		logPretty      = flag.Bool("log-pretty", true, "Enable pretty logging")
 	)
 	flag.Parse()
 
+	// Get logging configuration from environment variables
+	logLevel := getEnv("LOG_LEVEL", "info")
+	logPretty := getEnvBool("LOG_PRETTY", true)
+	logToFile := getEnvBool("LOG_TO_FILE", true)
+	logDir := getEnv("LOG_DIR", "logs")
+	logFileName := getEnv("LOG_FILE", "backtester.log")
+
 	// Initialize logging
 	logConfig := logging.DefaultConfig()
-	logConfig.Level = logging.LogLevel(*logLevel)
-	logConfig.Pretty = *logPretty
+	logConfig.Level = logging.LogLevel(logLevel)
+	logConfig.Pretty = logPretty
+	logConfig.EnableFile = logToFile
+	logConfig.LogDir = logDir
+	logConfig.LogFileName = logFileName
 	logging.Initialize(logConfig)
 
 	logger := logging.GetLogger("main")
@@ -139,6 +148,16 @@ func main() {
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
+	}
+	return defaultValue
+}
+
+// Helper function to get boolean environment variable with default
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			return parsed
+		}
 	}
 	return defaultValue
 }
