@@ -29,15 +29,15 @@ type Config struct {
 	Level      LogLevel `yaml:"level" json:"level"`
 	Pretty     bool     `yaml:"pretty" json:"pretty"`
 	TimeFormat string   `yaml:"time_format" json:"time_format"`
-	
+
 	// File logging configuration
-	EnableFile   bool   `yaml:"enable_file" json:"enable_file"`
-	LogDir       string `yaml:"log_dir" json:"log_dir"`
-	LogFileName  string `yaml:"log_file_name" json:"log_file_name"`
-	MaxSize      int    `yaml:"max_size" json:"max_size"`         // Max size in MB before rotation
-	MaxBackups   int    `yaml:"max_backups" json:"max_backups"`   // Max number of old files to keep
-	MaxAge       int    `yaml:"max_age" json:"max_age"`           // Max days to keep old files
-	Compress     bool   `yaml:"compress" json:"compress"`         // Compress old files
+	EnableFile  bool   `yaml:"enable_file" json:"enable_file"`
+	LogDir      string `yaml:"log_dir" json:"log_dir"`
+	LogFileName string `yaml:"log_file_name" json:"log_file_name"`
+	MaxSize     int    `yaml:"max_size" json:"max_size"`       // Max size in MB before rotation
+	MaxBackups  int    `yaml:"max_backups" json:"max_backups"` // Max number of old files to keep
+	MaxAge      int    `yaml:"max_age" json:"max_age"`         // Max days to keep old files
+	Compress    bool   `yaml:"compress" json:"compress"`       // Compress old files
 }
 
 // DefaultConfig returns a default logging configuration
@@ -46,15 +46,15 @@ func DefaultConfig() Config {
 		Level:      LevelInfo,
 		Pretty:     true,
 		TimeFormat: time.RFC3339,
-		
+
 		// File logging defaults
-		EnableFile:   true,
-		LogDir:       "logs",
-		LogFileName:  "backtester.log",
-		MaxSize:      10,    // 10MB
-		MaxBackups:   5,     // Keep 5 old files
-		MaxAge:       30,    // Keep files for 30 days
-		Compress:     true,  // Compress old files
+		EnableFile:  true,
+		LogDir:      "logs",
+		LogFileName: "backtester.log",
+		MaxSize:     10,   // 10MB
+		MaxBackups:  5,    // Keep 5 old files
+		MaxAge:      30,   // Keep files for 30 days
+		Compress:    true, // Compress old files
 	}
 }
 
@@ -144,14 +144,14 @@ func ConfigWithFileLogging(level LogLevel, pretty bool, logDir string, fileName 
 		Level:      level,
 		Pretty:     pretty,
 		TimeFormat: time.RFC3339,
-		
+
 		// File logging configuration
-		EnableFile:   true,
-		LogDir:       logDir,
-		LogFileName:  fileName,
-		MaxSize:      10,    // 10MB
-		MaxBackups:   5,     // Keep 5 old files
-		MaxAge:       30,    // Keep files for 30 days
-		Compress:     true,  // Compress old files
+		EnableFile:  true,
+		LogDir:      logDir,
+		LogFileName: fileName,
+		MaxSize:     10,   // 10MB
+		MaxBackups:  5,    // Keep 5 old files
+		MaxAge:      30,   // Keep files for 30 days
+		Compress:    true, // Compress old files
 	}
 }
