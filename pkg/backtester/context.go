@@ -3,18 +3,22 @@ package backtester
 import (
 	"fmt"
 
+	"github.com/ridopark/JonBuhTrader/pkg/logging"
 	"github.com/ridopark/JonBuhTrader/pkg/strategy"
+	"github.com/rs/zerolog"
 )
 
 // StrategyContext implements the strategy.Context interface for backtesting
 type StrategyContext struct {
 	engine *Engine
+	logger zerolog.Logger
 }
 
 // NewStrategyContext creates a new strategy context
 func NewStrategyContext(engine *Engine) *StrategyContext {
 	return &StrategyContext{
 		engine: engine,
+		logger: logging.GetLogger("strategy"),
 	}
 }
 
@@ -70,6 +74,31 @@ func (sc *StrategyContext) RSI(symbol string, period int) (float64, error) {
 
 // Log logs a message with the given level and fields
 func (sc *StrategyContext) Log(level string, message string, fields map[string]interface{}) {
-	// Simple logging implementation
-	fmt.Printf("[%s] %s %+v\n", level, message, fields)
+	event := sc.logger.WithLevel(zerolog.InfoLevel)
+
+	switch level {
+	case "trace":
+		event = sc.logger.Trace()
+	case "debug":
+		event = sc.logger.Debug()
+	case "info":
+		event = sc.logger.Info()
+	case "warn":
+		event = sc.logger.Warn()
+	case "error":
+		event = sc.logger.Error()
+	case "fatal":
+		event = sc.logger.Fatal()
+	case "panic":
+		event = sc.logger.Panic()
+	default:
+		event = sc.logger.Info()
+	}
+
+	// Add all fields to the log event
+	for key, value := range fields {
+		event = event.Interface(key, value)
+	}
+
+	event.Msg(message)
 }

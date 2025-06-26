@@ -7,33 +7,53 @@ import (
 
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/ridopark/JonBuhTrader/pkg/feed"
+	"github.com/ridopark/JonBuhTrader/pkg/logging"
 	"github.com/ridopark/JonBuhTrader/pkg/strategy"
+	"github.com/rs/zerolog"
 )
 
 // TimescaleDBProvider provides historical data from TimescaleDB
 type TimescaleDBProvider struct {
-	db *sql.DB
+	db     *sql.DB
+	logger zerolog.Logger
 }
 
 // NewTimescaleDBProvider creates a new TimescaleDB data provider
 func NewTimescaleDBProvider(connectionString string) (*TimescaleDBProvider, error) {
+	logger := logging.GetLogger("data-provider")
+
+	logger.Info().Msg("Initializing TimescaleDB connection")
+
 	db, err := sql.Open("postgres", connectionString)
 	if err != nil {
+		logger.Error().Err(err).Msg("Failed to open database connection")
 		return nil, fmt.Errorf("failed to open database connection: %w", err)
 	}
 
 	// Test the connection
+	logger.Debug().Msg("Testing database connection")
 	if err := db.Ping(); err != nil {
+		logger.Error().Err(err).Msg("Failed to ping database")
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
+	logger.Info().Msg("Successfully connected to TimescaleDB")
+
 	return &TimescaleDBProvider{
-		db: db,
+		db:     db,
+		logger: logger,
 	}, nil
 }
 
 // GetBars retrieves historical OHLCV data for the given parameters
 func (p *TimescaleDBProvider) GetBars(symbol string, timeframe string, start time.Time, end time.Time) ([]strategy.BarData, error) {
+	p.logger.Debug().
+		Str("symbol", symbol).
+		Str("timeframe", timeframe).
+		Time("start", start).
+		Time("end", end).
+		Msg("Fetching bars from database")
+
 	query := `
 		SELECT symbol, timestamp, open, high, low, close, volume, timeframe
 		FROM ohlcv_data 
@@ -43,6 +63,10 @@ func (p *TimescaleDBProvider) GetBars(symbol string, timeframe string, start tim
 
 	rows, err := p.db.Query(query, symbol, timeframe, start, end)
 	if err != nil {
+		p.logger.Error().Err(err).
+			Str("symbol", symbol).
+			Str("timeframe", timeframe).
+			Msg("Failed to query ohlcv_data")
 		return nil, fmt.Errorf("failed to query ohlcv_data: %w", err)
 	}
 	defer rows.Close()
@@ -61,6 +85,7 @@ func (p *TimescaleDBProvider) GetBars(symbol string, timeframe string, start tim
 			&bar.Timeframe,
 		)
 		if err != nil {
+			p.logger.Error().Err(err).Msg("Failed to scan row")
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 
@@ -68,8 +93,15 @@ func (p *TimescaleDBProvider) GetBars(symbol string, timeframe string, start tim
 	}
 
 	if err = rows.Err(); err != nil {
+		p.logger.Error().Err(err).Msg("Error iterating rows")
 		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
+
+	p.logger.Info().
+		Str("symbol", symbol).
+		Str("timeframe", timeframe).
+		Int("bars_count", len(bars)).
+		Msg("Successfully fetched bars from database")
 
 	return bars, nil
 }
@@ -158,6 +190,7 @@ func (p *TimescaleDBProvider) GetBarsLimit(symbol string, timeframe string, limi
 
 // Close closes the database connection
 func (p *TimescaleDBProvider) Close() error {
+	p.logger.Info().Msg("Closing TimescaleDB connection")
 	return p.db.Close()
 }
 

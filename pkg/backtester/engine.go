@@ -2,10 +2,11 @@ package backtester
 
 import (
 	"fmt"
-	"log"
 
 	"github.com/ridopark/JonBuhTrader/pkg/feed"
+	"github.com/ridopark/JonBuhTrader/pkg/logging"
 	"github.com/ridopark/JonBuhTrader/pkg/strategy"
+	"github.com/rs/zerolog"
 )
 
 // Engine coordinates the backtest execution
@@ -16,6 +17,7 @@ type Engine struct {
 	portfolio *Portfolio
 	results   *Results
 	ctx       *StrategyContext
+	logger    zerolog.Logger
 }
 
 // NewEngine creates a new backtesting engine
@@ -38,6 +40,7 @@ func NewEngine(s strategy.Strategy, f feed.DataFeed, initialCapital float64) *En
 		broker:    broker,
 		portfolio: portfolio,
 		results:   results,
+		logger:    logging.GetLogger("backtester"),
 	}
 
 	// Create context after engine is initialized
@@ -48,7 +51,7 @@ func NewEngine(s strategy.Strategy, f feed.DataFeed, initialCapital float64) *En
 
 // Run executes the backtest
 func (e *Engine) Run() error {
-	log.Println("Starting backtest execution...")
+	e.logger.Info().Msg("Starting backtest execution")
 
 	// Initialize strategy
 	if err := e.strategy.Initialize(e.ctx); err != nil {
@@ -77,17 +80,16 @@ func (e *Engine) Run() error {
 		}
 
 		if bar == nil {
-			log.Println("Received nil bar, breaking")
+			e.logger.Debug().Msg("Received nil bar, breaking")
 			break
 		}
 
 		barCount++
-		// log.Printf("Processing bar %d: %s at %v, price: %.2f", barCount, bar.Symbol, bar.Timestamp, bar.Close)
 
 		// Get orders from strategy for this bar
 		orders, err := e.strategy.OnBar(e.ctx, *bar)
 		if err != nil {
-			log.Printf("Strategy error on bar: %v", err)
+			e.logger.Error().Err(err).Msg("Strategy error on bar")
 			continue
 		}
 
@@ -95,7 +97,7 @@ func (e *Engine) Run() error {
 		for _, order := range orders {
 			trade, err := e.broker.ExecuteOrder(order, *bar)
 			if err != nil {
-				log.Printf("Order execution failed: %v", err)
+				e.logger.Error().Err(err).Msg("Order execution failed")
 				continue
 			}
 
@@ -104,7 +106,7 @@ func (e *Engine) Run() error {
 
 			// Notify strategy of trade
 			if err := e.strategy.OnTrade(e.ctx, *trade); err != nil {
-				log.Printf("Strategy error on trade: %v", err)
+				e.logger.Error().Err(err).Msg("Strategy error on trade")
 			}
 
 			// Record trade in results
@@ -123,11 +125,11 @@ func (e *Engine) Run() error {
 		})
 	}
 
-	log.Printf("Backtest completed. Processed %d bars", barCount)
+	e.logger.Info().Int("bars_processed", barCount).Msg("Backtest completed")
 
 	// Cleanup strategy
 	if err := e.strategy.Cleanup(e.ctx); err != nil {
-		log.Printf("Strategy cleanup error: %v", err)
+		e.logger.Error().Err(err).Msg("Strategy cleanup error")
 	}
 	// Finalize results
 	if len(e.results.EquityCurve) > 0 {
@@ -143,7 +145,7 @@ func (e *Engine) Run() error {
 	// Calculate performance metrics
 	e.results.CalculateMetrics()
 
-	log.Println("Backtest execution completed")
+	e.logger.Info().Msg("Backtest execution completed")
 	return nil
 }
 

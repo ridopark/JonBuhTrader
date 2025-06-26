@@ -5,7 +5,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/ridopark/JonBuhTrader/pkg/logging"
 	"github.com/ridopark/JonBuhTrader/pkg/strategy"
+	"github.com/rs/zerolog"
 )
 
 // HistoricalFeed provides historical market data for backtesting
@@ -15,6 +17,7 @@ type HistoricalFeed struct {
 	timeframe string
 	startDate time.Time
 	endDate   time.Time
+	logger    zerolog.Logger
 
 	// Internal state
 	allBars     []strategy.BarData
@@ -30,6 +33,7 @@ func NewHistoricalFeed(provider HistoricalDataProvider, symbols []string, timefr
 		timeframe:  timeframe,
 		startDate:  start,
 		endDate:    end,
+		logger:     logging.GetLogger("historical-feed"),
 		allBars:    make([]strategy.BarData, 0),
 		currentIdx: 0,
 	}
@@ -41,14 +45,19 @@ func (hf *HistoricalFeed) Initialize() error {
 		return nil
 	}
 
+	hf.logger.Debug().Msg("Initializing historical feed data")
+
 	// Load data for all symbols
 	for _, symbol := range hf.symbols {
+		hf.logger.Debug().Str("symbol", symbol).Msg("Loading data for symbol")
+
 		bars, err := hf.provider.GetBars(symbol, hf.timeframe, hf.startDate, hf.endDate)
 		if err != nil {
 			return fmt.Errorf("failed to load data for symbol %s: %w", symbol, err)
 		}
 
 		hf.allBars = append(hf.allBars, bars...)
+		hf.logger.Debug().Int("bars_loaded", len(bars)).Msg("Data loaded")
 	}
 
 	// Sort all bars by timestamp to ensure chronological order
@@ -56,6 +65,7 @@ func (hf *HistoricalFeed) Initialize() error {
 		return hf.allBars[i].Timestamp.Before(hf.allBars[j].Timestamp)
 	})
 
+	hf.logger.Info().Int("total_bars", len(hf.allBars)).Msg("Historical feed initialized")
 	hf.initialized = true
 	return nil
 }
@@ -75,6 +85,8 @@ func (hf *HistoricalFeed) GetNextBar() (*strategy.BarData, error) {
 	bar := hf.allBars[hf.currentIdx]
 	hf.currentIdx++
 
+	hf.logger.Debug().Str("symbol", bar.Symbol).Time("timestamp", bar.Timestamp).Msg("Providing next bar")
+
 	return &bar, nil
 }
 
@@ -89,12 +101,14 @@ func (hf *HistoricalFeed) HasMoreData() bool {
 
 // Reset resets the feed to the beginning
 func (hf *HistoricalFeed) Reset() error {
+	hf.logger.Info().Msg("Resetting historical feed")
 	hf.currentIdx = 0
 	return nil
 }
 
 // Close closes the data feed (no-op for historical feed)
 func (hf *HistoricalFeed) Close() error {
+	hf.logger.Info().Msg("Closing historical feed")
 	return nil
 }
 
