@@ -7,6 +7,125 @@ import (
 	"github.com/ridopark/JonBuhTrader/pkg/strategy"
 )
 
+// OpenPosition represents an open position entry
+type OpenPosition struct {
+	Quantity   float64   // Quantity of shares/contracts
+	EntryPrice float64   // Entry price per share
+	EntryTime  time.Time // When the position was opened
+	Commission float64   // Commission paid on entry
+}
+
+// PositionTracker tracks buy/sell pairs to calculate actual P&L using FIFO matching
+type PositionTracker struct {
+	Symbol       string         // Symbol being tracked
+	OpenTrades   []OpenPosition // Stack of open positions (FIFO)
+	TotalPL      float64        // Total P&L (realized + unrealized)
+	RealizedPL   float64        // Realized P&L from closed positions
+	UnrealizedPL float64        // Unrealized P&L from open positions
+}
+
+// ProcessTrade processes a trade and returns realized P&L from any closed positions
+func (pt *PositionTracker) ProcessTrade(trade strategy.TradeEvent) []float64 {
+	realizedPLs := make([]float64, 0)
+
+	if trade.Side == strategy.OrderSideBuy {
+		// Opening or adding to long position
+		openPos := OpenPosition{
+			Quantity:   trade.Quantity,
+			EntryPrice: trade.Price,
+			EntryTime:  trade.Timestamp,
+			Commission: trade.Commission,
+		}
+		pt.OpenTrades = append(pt.OpenTrades, openPos)
+
+	} else { // SELL
+		// Closing long positions using FIFO
+		remainingToSell := trade.Quantity
+		exitPrice := trade.Price
+		exitCommission := trade.Commission
+
+		for len(pt.OpenTrades) > 0 && remainingToSell > 0 {
+			openPos := &pt.OpenTrades[0]
+
+			if openPos.Quantity <= remainingToSell {
+				// Close entire open position
+				quantityClosed := openPos.Quantity
+
+				// Calculate P&L for this closed position
+				grossPL := (exitPrice - openPos.EntryPrice) * quantityClosed
+				totalCommission := openPos.Commission + (exitCommission * quantityClosed / trade.Quantity)
+				netPL := grossPL - totalCommission
+
+				realizedPLs = append(realizedPLs, netPL)
+				pt.RealizedPL += netPL
+
+				// Remove this position from open trades
+				pt.OpenTrades = pt.OpenTrades[1:]
+				remainingToSell -= quantityClosed
+
+			} else {
+				// Partially close open position
+				quantityClosed := remainingToSell
+
+				// Calculate P&L for the closed portion
+				grossPL := (exitPrice - openPos.EntryPrice) * quantityClosed
+				totalCommission := openPos.Commission*(quantityClosed/openPos.Quantity) +
+					(exitCommission * quantityClosed / trade.Quantity)
+				netPL := grossPL - totalCommission
+
+				realizedPLs = append(realizedPLs, netPL)
+				pt.RealizedPL += netPL
+
+				// Reduce the open position quantity and commission proportionally
+				openPos.Quantity -= quantityClosed
+				openPos.Commission -= openPos.Commission * (quantityClosed / (openPos.Quantity + quantityClosed))
+				remainingToSell = 0
+			}
+		}
+
+		// If we still have quantity to sell but no open positions, it means we're going short
+		// For simplicity, we'll treat short positions as negative open positions
+		if remainingToSell > 0 {
+			shortPos := OpenPosition{
+				Quantity:   -remainingToSell, // Negative for short
+				EntryPrice: exitPrice,
+				EntryTime:  trade.Timestamp,
+				Commission: exitCommission * remainingToSell / trade.Quantity,
+			}
+			pt.OpenTrades = append(pt.OpenTrades, shortPos)
+		}
+	}
+
+	return realizedPLs
+}
+
+// GetCurrentPosition returns the net position (positive = long, negative = short)
+func (pt *PositionTracker) GetCurrentPosition() float64 {
+	totalPosition := 0.0
+	for _, pos := range pt.OpenTrades {
+		totalPosition += pos.Quantity
+	}
+	return totalPosition
+}
+
+// CalculateUnrealizedPL calculates unrealized P&L based on current market price
+func (pt *PositionTracker) CalculateUnrealizedPL(currentPrice float64) float64 {
+	unrealizedPL := 0.0
+
+	for _, pos := range pt.OpenTrades {
+		if pos.Quantity > 0 {
+			// Long position
+			unrealizedPL += (currentPrice - pos.EntryPrice) * pos.Quantity
+		} else {
+			// Short position
+			unrealizedPL += (pos.EntryPrice - currentPrice) * (-pos.Quantity)
+		}
+	}
+
+	pt.UnrealizedPL = unrealizedPL
+	return unrealizedPL
+}
+
 // Results contains the results of a backtest
 type Results struct {
 	StrategyName   string                `json:"strategy_name"`
@@ -53,46 +172,55 @@ func (r *Results) CalculateMetrics() {
 		return
 	}
 
-	// Basic trade statistics
-	r.Metrics.TotalTrades = len(r.Trades)
-
 	var totalPL, totalWins, totalLosses float64
 	var winningTrades, losingTrades int
 	var largestWin, largestLoss float64
 
-	// Group trades by symbol and calculate P&L for each trade
+	// Track positions per symbol to calculate actual P&L from entry/exit pairs
+	positions := make(map[string]*PositionTracker)
 	tradeResults := make([]float64, 0)
 
-	// Simple P&L calculation (this is simplified - in reality we'd need to track entry/exit pairs)
+	// Process trades chronologically to calculate actual P&L from entry/exit pairs
 	for _, trade := range r.Trades {
-		// This is a simplified calculation
-		// In a real implementation, we'd need to pair buy/sell trades to calculate actual P&L
-		pl := 0.0
-		if trade.Side == strategy.OrderSideSell {
-			// Assume this is a profitable trade for simplicity
-			pl = trade.Quantity * trade.Price * 0.01 // 1% profit assumption
-		} else {
-			pl = -trade.Commission // Just commission cost for buy trades
+		symbol := trade.Symbol
+
+		// Initialize position tracker for symbol if not exists
+		if _, exists := positions[symbol]; !exists {
+			positions[symbol] = &PositionTracker{
+				Symbol:       symbol,
+				OpenTrades:   make([]OpenPosition, 0),
+				TotalPL:      0,
+				RealizedPL:   0,
+				UnrealizedPL: 0,
+			}
 		}
 
-		tradeResults = append(tradeResults, pl)
-		totalPL += pl
+		pos := positions[symbol]
+		realizedPLs := pos.ProcessTrade(trade)
 
-		if pl > 0 {
-			winningTrades++
-			totalWins += pl
-			if pl > largestWin {
-				largestWin = pl
-			}
-		} else if pl < 0 {
-			losingTrades++
-			totalLosses += pl
-			if pl < largestLoss {
-				largestLoss = pl
+		// Record each realized P&L from closed positions
+		for _, pl := range realizedPLs {
+			tradeResults = append(tradeResults, pl)
+			totalPL += pl
+
+			if pl > 0 {
+				winningTrades++
+				totalWins += pl
+				if pl > largestWin {
+					largestWin = pl
+				}
+			} else if pl < 0 {
+				losingTrades++
+				totalLosses += pl
+				if pl < largestLoss {
+					largestLoss = pl
+				}
 			}
 		}
 	}
 
+	// Set total trades to the number of completed round-trip trades (not individual buy/sell orders)
+	r.Metrics.TotalTrades = len(tradeResults)
 	r.Metrics.WinningTrades = winningTrades
 	r.Metrics.LosingTrades = losingTrades
 
@@ -221,6 +349,7 @@ Backtest Results for %s
 Period: %s to %s
 Initial Capital: $%.2f
 Final Capital: $%.2f
+Final Cash: $%.2f
 Total Return: %.2f%%
 Total P&L: $%.2f
 Max Drawdown: %.2f%%
@@ -240,12 +369,15 @@ Risk Metrics:
 - Sortino Ratio: %.2f
 - Calmar Ratio: %.2f
 - Max Drawdown: %.2f%%
-`,
+
+All Trades:
+===========`,
 		r.StrategyName,
 		r.StartDate.Format("2006-01-02"),
 		r.EndDate.Format("2006-01-02"),
 		r.InitialCapital,
 		r.FinalCapital,
+		r.Portfolio.Cash,
 		r.TotalReturn,
 		r.FinalCapital-r.InitialCapital,
 		r.MaxDrawdown*100,
@@ -264,6 +396,105 @@ Risk Metrics:
 		r.Metrics.CalmarRatio,
 		r.Metrics.MaxDrawdownPct,
 	)
+
+	// Add detailed trade listing
+	if len(r.Trades) > 0 {
+		summary += "\n"
+		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %-12s %-10s %-8s %-8s %-8s %-10s\n",
+			"#", "Time", "Symbol", "Side", "Quantity", "Price", "Value", "Commission", "SecFee", "FinraTaf", "Slippage", "P&L")
+		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %-12s %-10s %-8s %-8s %-8s %-10s\n",
+			"---", "----------------", "--------", "------", "----------", "----------", "------------", "----------", "--------", "--------", "--------", "----------")
+
+		// Track positions to calculate P&L per trade
+		positionTracker := make(map[string]*PositionTracker)
+
+		for i, trade := range r.Trades {
+			tradeValue := trade.Quantity * trade.Price
+			timeStr := trade.Timestamp.Format("2006-01-02 15:04")
+
+			// Calculate P&L for this trade
+			symbol := trade.Symbol
+			if _, exists := positionTracker[symbol]; !exists {
+				positionTracker[symbol] = &PositionTracker{
+					Symbol:     symbol,
+					OpenTrades: make([]OpenPosition, 0),
+				}
+			}
+
+			pos := positionTracker[symbol]
+			realizedPLs := pos.ProcessTrade(trade)
+
+			// Sum up realized P&L for this trade
+			tradePL := 0.0
+			for _, pl := range realizedPLs {
+				tradePL += pl
+			}
+
+			// If no realized P&L, show "Open" for open positions
+			plStr := "Open"
+			if tradePL != 0 {
+				plStr = fmt.Sprintf("%.2f", tradePL)
+			}
+
+			summary += fmt.Sprintf("%-4d %-16s %-8s %-6s %10.2f %10.2f %12.2f %10.2f %8.2f %8.2f %8.2f %10s\n",
+				i+1,
+				timeStr,
+				trade.Symbol,
+				string(trade.Side),
+				trade.Quantity,
+				trade.Price,
+				tradeValue,
+				trade.Commission,
+				trade.SecFee,
+				trade.FinraTaf,
+				trade.Slippage,
+				plStr,
+			)
+		}
+
+		// Add summary totals
+		totalValue := 0.0
+		totalCommission := 0.0
+		totalSecFee := 0.0
+		totalFinraTaf := 0.0
+		totalSlippage := 0.0
+		totalRealizedPL := 0.0
+
+		// Calculate totals and track positions for P&L calculation
+		totalPositionTracker := make(map[string]*PositionTracker)
+
+		for _, trade := range r.Trades {
+			totalValue += trade.Quantity * trade.Price
+			totalCommission += trade.Commission
+			totalSecFee += trade.SecFee
+			totalFinraTaf += trade.FinraTaf
+			totalSlippage += trade.Slippage
+
+			// Calculate realized P&L for totals
+			symbol := trade.Symbol
+			if _, exists := totalPositionTracker[symbol]; !exists {
+				totalPositionTracker[symbol] = &PositionTracker{
+					Symbol:     symbol,
+					OpenTrades: make([]OpenPosition, 0),
+				}
+			}
+
+			pos := totalPositionTracker[symbol]
+			realizedPLs := pos.ProcessTrade(trade)
+
+			// Sum up all realized P&L
+			for _, pl := range realizedPLs {
+				totalRealizedPL += pl
+			}
+		}
+
+		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %-12s %-10s %-8s %-8s %-8s %-10s\n",
+			"---", "----------------", "--------", "------", "----------", "----------", "------------", "----------", "--------", "--------", "--------", "----------")
+		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %12.2f %10.2f %8.2f %8.2f %8.2f %10.2f\n",
+			"", "", "TOTAL", "", "", "", totalValue, totalCommission, totalSecFee, totalFinraTaf, totalSlippage, totalRealizedPL)
+	} else {
+		summary += "\nNo trades executed.\n"
+	}
 
 	return summary
 }

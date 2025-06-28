@@ -46,86 +46,88 @@ func (s *MovingAverageCrossoverStrategy) Initialize(ctx strategy.Context) error 
 }
 
 // OnBar processes each bar and generates trading signals
-func (s *MovingAverageCrossoverStrategy) OnBar(ctx strategy.Context, bar strategy.BarData) ([]strategy.Order, error) {
+func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataPoint strategy.DataPoint) ([]strategy.Order, error) {
 	var orders []strategy.Order
 
-	// Add current price to our price history
-	s.prices = append(s.prices, bar.Close)
+	for _, symbol := range s.GetSymbols() {
+		// Add current price to our price history
+		s.prices = append(s.prices, dataPoint.Bars[symbol].Close)
 
-	// Keep only the data we need (longPeriod + 1 for crossover detection)
-	if len(s.prices) > s.longPeriod+1 {
-		s.prices = s.prices[1:]
-	}
+		// Keep only the data we need (longPeriod + 1 for crossover detection)
+		if len(s.prices) > s.longPeriod+1 {
+			s.prices = s.prices[1:]
+		}
 
-	// Need at least longPeriod prices to calculate moving averages
-	if len(s.prices) < s.longPeriod {
-		return orders, nil
-	}
+		// Need at least longPeriod prices to calculate moving averages
+		if len(s.prices) < s.longPeriod {
+			return orders, nil
+		}
 
-	// Calculate moving averages
-	s.lastShortMA = s.currentShortMA
-	s.lastLongMA = s.currentLongMA
+		// Calculate moving averages
+		s.lastShortMA = s.currentShortMA
+		s.lastLongMA = s.currentLongMA
 
-	s.currentShortMA = s.calculateSMA(s.shortPeriod)
-	s.currentLongMA = s.calculateSMA(s.longPeriod)
+		s.currentShortMA = s.calculateSMA(s.shortPeriod)
+		s.currentLongMA = s.calculateSMA(s.longPeriod)
 
-	// Need at least one previous calculation for crossover detection
-	if s.lastShortMA == 0 || s.lastLongMA == 0 {
-		return orders, nil
-	}
+		// Need at least one previous calculation for crossover detection
+		if s.lastShortMA == 0 || s.lastLongMA == 0 {
+			return orders, nil
+		}
 
-	// Check for crossover signals
-	prevCross := s.lastShortMA > s.lastLongMA
-	currentCross := s.currentShortMA > s.currentLongMA
+		// Check for crossover signals
+		prevCross := s.lastShortMA > s.lastLongMA
+		currentCross := s.currentShortMA > s.currentLongMA
 
-	position := ctx.GetPosition(bar.Symbol)
-	cash := ctx.GetCash()
+		position := ctx.GetPosition(symbol)
+		cash := ctx.GetCash()
 
-	// Bullish crossover: short MA crosses above long MA
-	if !prevCross && currentCross && !s.position {
-		// Buy signal
-		quantity := s.calculatePositionSize(cash, bar.Close, 0.95) // Use 95% of available cash
-		if quantity > 0 {
+		// Bullish crossover: short MA crosses above long MA
+		if !prevCross && currentCross && !s.position {
+			// Buy signal
+			quantity := s.calculatePositionSize(cash, dataPoint.Bars[symbol].Close, 0.95) // Use 95% of available cash
+			if quantity > 0 {
+				order := strategy.Order{
+					Symbol:   symbol,
+					Side:     strategy.OrderSideBuy,
+					Type:     strategy.OrderTypeMarket,
+					Quantity: quantity,
+					Strategy: s.GetName(),
+				}
+				orders = append(orders, order)
+				s.position = true
+
+				ctx.Log("info", "Bullish crossover detected - buying", map[string]interface{}{
+					"symbol":   symbol,
+					"price":    dataPoint.Bars[symbol].Close,
+					"quantity": quantity,
+					"shortMA":  s.currentShortMA,
+					"longMA":   s.currentLongMA,
+				})
+			}
+		}
+
+		// Bearish crossover: short MA crosses below long MA
+		if prevCross && !currentCross && s.position && position != nil && position.Quantity > 0 {
+			// Sell signal
 			order := strategy.Order{
-				Symbol:   bar.Symbol,
-				Side:     strategy.OrderSideBuy,
+				Symbol:   symbol,
+				Side:     strategy.OrderSideSell,
 				Type:     strategy.OrderTypeMarket,
-				Quantity: quantity,
+				Quantity: position.Quantity,
 				Strategy: s.GetName(),
 			}
 			orders = append(orders, order)
-			s.position = true
+			s.position = false
 
-			ctx.Log("info", "Bullish crossover detected - buying", map[string]interface{}{
-				"symbol":   bar.Symbol,
-				"price":    bar.Close,
-				"quantity": quantity,
+			ctx.Log("info", "Bearish crossover detected - selling", map[string]interface{}{
+				"symbol":   symbol,
+				"price":    dataPoint.Bars[symbol].Close,
+				"quantity": position.Quantity,
 				"shortMA":  s.currentShortMA,
 				"longMA":   s.currentLongMA,
 			})
 		}
-	}
-
-	// Bearish crossover: short MA crosses below long MA
-	if prevCross && !currentCross && s.position && position != nil && position.Quantity > 0 {
-		// Sell signal
-		order := strategy.Order{
-			Symbol:   bar.Symbol,
-			Side:     strategy.OrderSideSell,
-			Type:     strategy.OrderTypeMarket,
-			Quantity: position.Quantity,
-			Strategy: s.GetName(),
-		}
-		orders = append(orders, order)
-		s.position = false
-
-		ctx.Log("info", "Bearish crossover detected - selling", map[string]interface{}{
-			"symbol":   bar.Symbol,
-			"price":    bar.Close,
-			"quantity": position.Quantity,
-			"shortMA":  s.currentShortMA,
-			"longMA":   s.currentLongMA,
-		})
 	}
 
 	return orders, nil

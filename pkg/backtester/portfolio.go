@@ -9,12 +9,12 @@ import (
 
 // Portfolio manages positions, cash, and P&L tracking
 type Portfolio struct {
-	cash        float64
-	initialCash float64
-	positions   map[string]*strategy.Position
-	trades      []strategy.TradeEvent
-	totalValue  float64
-	commission  float64
+	cash             float64
+	initialCash      float64
+	positions        map[string]*strategy.Position
+	trades           []strategy.TradeEvent
+	totalValue       float64
+	commissionConfig *CommissionConfig
 
 	// Performance tracking
 	dailyReturns    []float64
@@ -31,16 +31,16 @@ type EquityPoint struct {
 }
 
 // NewPortfolio creates a new portfolio with the given initial capital
-func NewPortfolio(initialCapital, commission float64) *Portfolio {
+func NewPortfolio(initialCapital float64, commissionConfig *CommissionConfig) *Portfolio {
 	return &Portfolio{
-		cash:        initialCapital,
-		initialCash: initialCapital,
-		positions:   make(map[string]*strategy.Position),
-		trades:      make([]strategy.TradeEvent, 0),
-		totalValue:  initialCapital,
-		commission:  commission,
-		equity:      make([]EquityPoint, 0),
-		peakValue:   initialCapital,
+		cash:             initialCapital,
+		initialCash:      initialCapital,
+		positions:        make(map[string]*strategy.Position),
+		trades:           make([]strategy.TradeEvent, 0),
+		totalValue:       initialCapital,
+		commissionConfig: commissionConfig,
+		equity:           make([]EquityPoint, 0),
+		peakValue:        initialCapital,
 	}
 }
 
@@ -94,9 +94,10 @@ func (p *Portfolio) ExecuteTrade(trade strategy.TradeEvent, currentPrice float64
 		p.positions[symbol] = position
 	}
 
-	// Calculate trade value including commission
+	// Calculate trade value including all fees
 	tradeValue := trade.Quantity * trade.Price
-	totalCost := tradeValue + trade.Commission
+	totalFees := trade.Commission + trade.SecFee + trade.FinraTaf + trade.Slippage
+	totalCost := tradeValue + totalFees
 
 	// Update position based on trade side
 	if trade.Side == strategy.OrderSideBuy {
@@ -141,7 +142,7 @@ func (p *Portfolio) ExecuteTrade(trade strategy.TradeEvent, currentPrice float64
 				position.AvgPrice = ((position.AvgPrice * math.Abs(position.Quantity)) + (trade.Price * trade.Quantity)) / math.Abs(newQuantity)
 			}
 			position.Quantity = newQuantity
-			p.cash += tradeValue - trade.Commission
+			p.cash += tradeValue - totalFees
 		} else {
 			// Selling long position
 			if trade.Quantity <= position.Quantity {
@@ -149,7 +150,7 @@ func (p *Portfolio) ExecuteTrade(trade strategy.TradeEvent, currentPrice float64
 				realizedPL := (trade.Price - position.AvgPrice) * trade.Quantity
 				position.RealizedPL += realizedPL
 				position.Quantity -= trade.Quantity
-				p.cash += tradeValue - trade.Commission
+				p.cash += tradeValue - totalFees
 
 				if position.Quantity == 0 {
 					position.AvgPrice = 0
@@ -164,13 +165,13 @@ func (p *Portfolio) ExecuteTrade(trade strategy.TradeEvent, currentPrice float64
 				newShortQuantity := trade.Quantity - sellQuantity
 				position.Quantity = -newShortQuantity
 				position.AvgPrice = trade.Price
-				p.cash += tradeValue - trade.Commission
+				p.cash += tradeValue - totalFees
 			}
 		}
 	}
 
 	// Update market value and unrealized P&L
-	position.MarketValue = position.Quantity * currentPrice
+	position.MarketValue = position.MarketValue + position.Quantity*currentPrice
 	if position.Quantity > 0 {
 		position.UnrealizedPL = (currentPrice - position.AvgPrice) * position.Quantity
 	} else if position.Quantity < 0 {
@@ -191,21 +192,20 @@ func (p *Portfolio) ExecuteTrade(trade strategy.TradeEvent, currentPrice float64
 }
 
 // UpdateMarketValues updates the market values of all positions
-func (p *Portfolio) UpdateMarketValues(prices map[string]float64) {
+func (p *Portfolio) UpdateMarketValues(barData map[string]strategy.BarData) {
 	totalMarketValue := 0.0
 
 	for symbol, position := range p.positions {
-		if price, exists := prices[symbol]; exists {
-			position.MarketValue = position.Quantity * price
+		if bar, exists := barData[symbol]; exists {
+			position.MarketValue = position.Quantity * bar.Close
 
 			if position.Quantity > 0 {
-				position.UnrealizedPL = (price - position.AvgPrice) * position.Quantity
+				position.UnrealizedPL = (bar.Close - position.AvgPrice) * position.Quantity
 			} else if position.Quantity < 0 {
-				position.UnrealizedPL = (position.AvgPrice - price) * math.Abs(position.Quantity)
+				position.UnrealizedPL = (position.AvgPrice - bar.Close) * math.Abs(position.Quantity)
 			}
-
-			totalMarketValue += position.MarketValue
 		}
+		totalMarketValue += position.MarketValue
 	}
 
 	p.totalValue = p.cash + totalMarketValue
@@ -248,7 +248,9 @@ func (p *Portfolio) GetCurrentDrawdown() float64 {
 // CanAfford checks if the portfolio can afford a trade
 func (p *Portfolio) CanAfford(order strategy.Order, price float64) bool {
 	if order.Side == strategy.OrderSideBuy {
-		totalCost := order.Quantity * price * (1 + p.commission)
+		tradeValue := order.Quantity * price
+		commission := p.commissionConfig.CalculateCommission(tradeValue)
+		totalCost := tradeValue + commission
 		return p.cash >= totalCost
 	}
 

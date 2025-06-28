@@ -12,7 +12,7 @@ type DataFeed interface {
 	Initialize() error
 
 	// GetNextBar returns the next bar of data, or nil if no more data
-	GetNextBar() (*strategy.BarData, error)
+	GetNextDataPoint() (*strategy.DataPoint, error)
 
 	// HasMoreData returns true if there's more data available
 	HasMoreData() bool

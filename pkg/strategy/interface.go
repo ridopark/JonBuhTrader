@@ -16,6 +16,12 @@ type BarData struct {
 	Timeframe string
 }
 
+// DataPoint represents market data for all symbols at a specific timestamp
+type DataPoint struct {
+	Timestamp time.Time
+	Bars      map[string]BarData // symbol -> bar data
+}
+
 // OrderSide represents the side of an order
 type OrderSide string
 
@@ -56,6 +62,9 @@ type TradeEvent struct {
 	Price      float64
 	Timestamp  time.Time
 	Commission float64
+	SecFee     float64 // SEC Transaction Fee
+	FinraTaf   float64 // FINRA Trading Activity Fee
+	Slippage   float64 // Slippage cost
 	Strategy   string
 }
 
@@ -104,9 +113,9 @@ type Strategy interface {
 	// Initialize is called once before the strategy starts
 	Initialize(ctx Context) error
 
-	// OnBar is called for each new bar of market data
+	// OnDatapoint is called for each new datapoint of market data
 	// Returns a slice of orders to be executed
-	OnBar(ctx Context, bar BarData) ([]Order, error)
+	OnDataPoint(ctx Context, datapoint DataPoint) ([]Order, error)
 
 	// OnTrade is called when a trade is executed
 	OnTrade(ctx Context, trade TradeEvent) error

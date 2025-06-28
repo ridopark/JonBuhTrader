@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -22,7 +23,7 @@ func main() {
 
 	// Command line flags
 	var (
-		symbol         = flag.String("symbol", "AAPL", "Symbol to backtest")
+		symbolsFlag    = flag.String("symbols", "AAPL", "Symbols to backtest (comma-separated, e.g., AAPL,TSLA)")
 		strategyFlag   = flag.String("strategy", "buy_and_hold", "Strategy to use")
 		startDate      = flag.String("start", "2024-01-01", "Start date (YYYY-MM-DD)")
 		endDate        = flag.String("end", "2024-12-31", "End date (YYYY-MM-DD)")
@@ -72,6 +73,15 @@ func main() {
 	}
 	end = end.Add(24 * time.Hour) // Add one day to include all data for the end date
 
+	// Parse symbols from comma-delimited string
+	symbolsInput := strings.TrimSpace(*symbolsFlag)
+	symbols := strings.Split(symbolsInput, ",")
+	for i, symbol := range symbols {
+		symbols[i] = strings.TrimSpace(symbol)
+	}
+
+	logger.Debug().Strs("symbols", symbols).Msg("Parsed symbols from input")
+
 	// Get database configuration from environment variables
 	dbHost := getEnv("POSTGRES_HOST", "localhost")
 	dbPort := getEnv("POSTGRES_PORT", "5432")
@@ -99,7 +109,6 @@ func main() {
 	defer provider.Close()
 
 	// Create data feed
-	symbols := []string{*symbol}
 	dataFeed := feed.NewHistoricalFeed(provider, symbols, *timeframe, start, end)
 
 	// Create strategy
@@ -108,23 +117,33 @@ func main() {
 	// We can override this based on the flag if we had more strategies
 	switch *strategyFlag {
 	case "buy_and_hold":
-		strategyInstance = examples.NewBuyAndHoldStrategy()
+		strategyInstance = examples.NewBuyAndHoldStrategy(symbols, *initialCapital)
 	case "ma_crossover":
 		strategyInstance = examples.NewMovingAverageCrossoverStrategy(5, 20) // 5-period and 20-period MA
 	default:
 		logger.Fatal().Str("strategy", *strategyFlag).Msg("Unknown strategy. Available strategies: buy_and_hold, ma_crossover")
 	}
 
+	// Get trading configuration from environment variables
+	commissionType := getEnv("COMMISSION_TYPE", "percentage")
+	commissionRate := getEnvFloat("COMMISSION_RATE", 0.001)
+	slippageRate := getEnvFloat("SLIPPAGE_RATE", 0.001)
+	maxSlippage := getEnvFloat("MAX_SLIPPAGE", 0.003)
+
 	// Create and run backtester
 	logger.Info().
-		Str("symbol", *symbol).
+		Strs("symbols", symbols).
 		Str("start_date", *startDate).
 		Str("end_date", *endDate).
 		Str("strategy", *strategyFlag).
 		Float64("initial_capital", *initialCapital).
+		Str("commission_type", commissionType).
+		Float64("commission_rate", commissionRate).
+		Float64("slippage_rate", slippageRate).
+		Float64("max_slippage", maxSlippage).
 		Msg("Running backtest")
 
-	engine := backtester.NewEngine(strategyInstance, dataFeed, *initialCapital)
+	engine := backtester.NewEngineWithConfig(strategyInstance, dataFeed, *initialCapital, commissionType, commissionRate, slippageRate, maxSlippage)
 
 	err = engine.Run()
 	if err != nil {
@@ -156,6 +175,16 @@ func getEnv(key, defaultValue string) string {
 func getEnvBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.ParseBool(value); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+// Helper function to get float environment variable with default
+func getEnvFloat(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
 			return parsed
 		}
 	}

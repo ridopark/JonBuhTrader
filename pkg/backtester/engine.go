@@ -20,13 +20,26 @@ type Engine struct {
 	logger    zerolog.Logger
 }
 
-// NewEngine creates a new backtesting engine
+// NewEngine creates a new backtesting engine with default configuration
 func NewEngine(s strategy.Strategy, f feed.DataFeed, initialCapital float64) *Engine {
-	commission := 0.001 // 0.1% commission
-	slippage := 0.001   // 0.1% slippage
+	return NewEngineWithConfig(s, f, initialCapital, "percentage", 0.001, 0.001, 0.003)
+}
 
-	portfolio := NewPortfolio(initialCapital, commission)
-	broker := NewBroker(commission, slippage)
+// NewEngineWithConfig creates a new backtesting engine with custom commission and slippage configuration
+func NewEngineWithConfig(s strategy.Strategy, f feed.DataFeed, initialCapital float64, commissionType string, commissionRate, slippage, maxSlippage float64) *Engine {
+	var commissionTypeEnum CommissionType
+	switch commissionType {
+	case "fixed":
+		commissionTypeEnum = CommissionTypeFixed
+	case "percentage":
+		commissionTypeEnum = CommissionTypePercentage
+	default:
+		commissionTypeEnum = CommissionTypePercentage
+	}
+
+	commissionConfig := NewCommissionConfig(commissionTypeEnum, commissionRate)
+	portfolio := NewPortfolio(initialCapital, commissionConfig)
+	broker := NewBroker(commissionConfig, slippage, maxSlippage)
 	results := &Results{
 		StrategyName:   s.GetName(),
 		InitialCapital: initialCapital,
@@ -72,22 +85,22 @@ func (e *Engine) Run() error {
 	// var pendingOrders []strategy.Order
 
 	// Process market data
-	barCount := 0
+	dataPointCount := 0
 	for e.feed.HasMoreData() {
-		bar, err := e.feed.GetNextBar()
+		dataPoint, err := e.feed.GetNextDataPoint()
 		if err != nil {
 			return fmt.Errorf("error reading market data: %w", err)
 		}
 
-		if bar == nil {
-			e.logger.Debug().Msg("Received nil bar, breaking")
+		if dataPoint == nil {
+			e.logger.Debug().Msg("Received nil datapoint, breaking")
 			break
 		}
 
-		barCount++
+		dataPointCount++
 
 		// Get orders from strategy for this bar
-		orders, err := e.strategy.OnBar(e.ctx, *bar)
+		orders, err := e.strategy.OnDataPoint(e.ctx, *dataPoint)
 		if err != nil {
 			e.logger.Error().Err(err).Msg("Strategy error on bar")
 			continue
@@ -95,7 +108,8 @@ func (e *Engine) Run() error {
 
 		// Execute orders through broker
 		for _, order := range orders {
-			trade, err := e.broker.ExecuteOrder(order, *bar)
+			bar := dataPoint.Bars[order.Symbol]
+			trade, err := e.broker.ExecuteOrder(order, bar)
 			if err != nil {
 				e.logger.Error().Err(err).Msg("Order execution failed")
 				continue
@@ -114,18 +128,20 @@ func (e *Engine) Run() error {
 		}
 
 		// Update portfolio value with current market prices
-		e.portfolio.UpdateMarketValues(map[string]float64{
-			bar.Symbol: bar.Close,
-		})
+		e.portfolio.UpdateMarketValues(dataPoint.Bars)
 
 		// Record equity point
 		e.results.EquityCurve = append(e.results.EquityCurve, EquityPoint{
-			Timestamp: bar.Timestamp,
+			Timestamp: dataPoint.Timestamp,
 			Value:     e.portfolio.GetTotalValue(),
 		})
 	}
 
-	e.logger.Info().Int("bars_processed", barCount).Msg("Backtest completed")
+	e.logger.Info().Int("bars_processed", dataPointCount).Msg("Backtest completed")
+
+	if dataPointCount > 0 {
+		e.CloseAllPostionsAtEnd()
+	}
 
 	// Cleanup strategy
 	if err := e.strategy.Cleanup(e.ctx); err != nil {
@@ -147,6 +163,108 @@ func (e *Engine) Run() error {
 
 	e.logger.Info().Msg("Backtest execution completed")
 	return nil
+}
+
+func (e *Engine) CloseAllPostionsAtEnd() {
+	e.logger.Info().Msg("Liquidating all positions at end of backtest")
+
+	positions := e.portfolio.GetPositions()
+	if len(positions) == 0 {
+		e.logger.Info().Msg("No positions to liquidate")
+		return
+	}
+
+	liquidationCount := 0
+	totalLiquidationValue := 0.0
+
+	for symbol, position := range positions {
+		if position.Quantity == 0 {
+			continue // Skip positions with zero quantity
+		}
+
+		// Get the last known price for this symbol from the portfolio's market values
+		// We'll use the position's current market value to derive the price
+		lastPrice := 0.0
+		if position.Quantity != 0 {
+			lastPrice = position.MarketValue / position.Quantity
+		}
+
+		if lastPrice <= 0 {
+			e.logger.Error().Str("symbol", symbol).Msg("Cannot liquidate position: invalid price")
+			continue
+		}
+
+		// Determine the order side based on current position
+		var orderSide strategy.OrderSide
+		quantity := position.Quantity
+		if quantity > 0 {
+			orderSide = strategy.OrderSideSell // Close long position
+		} else {
+			orderSide = strategy.OrderSideBuy // Close short position
+			quantity = -quantity              // Make quantity positive for the order
+		}
+
+		// Create liquidation order
+		liquidationOrder := strategy.Order{
+			Symbol:   symbol,
+			Side:     orderSide,
+			Quantity: quantity,
+			Type:     strategy.OrderTypeMarket,
+		}
+
+		// Create a synthetic bar for liquidation at the last known price
+		liquidationBar := strategy.BarData{
+			Symbol:    symbol,
+			Timestamp: e.results.EquityCurve[len(e.results.EquityCurve)-1].Timestamp,
+			Open:      lastPrice,
+			High:      lastPrice,
+			Low:       lastPrice,
+			Close:     lastPrice,
+			Volume:    0, // Synthetic bar has no volume
+		}
+
+		// Execute the liquidation order
+		trade, err := e.broker.ExecuteOrder(liquidationOrder, liquidationBar)
+		if err != nil {
+			e.logger.Error().Err(err).Str("symbol", symbol).Msg("Failed to execute liquidation order")
+			continue
+		}
+
+		// Apply trade to portfolio
+		e.portfolio.ExecuteTrade(*trade, lastPrice)
+
+		// Record the liquidation trade in results
+		e.results.Trades = append(e.results.Trades, *trade)
+
+		liquidationValue := trade.Quantity * trade.Price
+		totalLiquidationValue += liquidationValue
+		liquidationCount++
+
+		e.logger.Info().
+			Str("symbol", symbol).
+			Str("side", string(orderSide)).
+			Float64("quantity", trade.Quantity).
+			Float64("price", trade.Price).
+			Float64("value", liquidationValue).
+			Float64("commission", trade.Commission).
+			Msg("Position liquidated")
+	}
+
+	if liquidationCount > 0 {
+		// Record final equity point after all liquidations
+		finalTimestamp := e.results.EquityCurve[len(e.results.EquityCurve)-1].Timestamp
+		e.results.EquityCurve = append(e.results.EquityCurve, EquityPoint{
+			Timestamp: finalTimestamp,
+			Value:     e.portfolio.GetTotalValue(),
+		})
+
+		e.logger.Info().
+			Int("positions_liquidated", liquidationCount).
+			Float64("total_liquidation_value", totalLiquidationValue).
+			Float64("final_cash", e.portfolio.GetCash()).
+			Float64("final_portfolio_value", e.portfolio.GetTotalValue()).
+			Msg("All positions liquidated")
+	}
 }
 
 // GetResults returns the backtest results
