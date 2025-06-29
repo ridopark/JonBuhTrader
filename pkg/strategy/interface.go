@@ -95,14 +95,14 @@ type Context interface {
 	GetPosition(symbol string) *Position
 	GetCash() float64
 
-	// Historical data access
-	GetBars(symbol string, timeframe string, limit int) ([]BarData, error)
-	GetLastBar(symbol string, timeframe string) (*BarData, error)
-
 	// Technical indicators (to be implemented)
 	SMA(symbol string, period int) (float64, error)
 	EMA(symbol string, period int) (float64, error)
 	RSI(symbol string, period int) (float64, error)
+	MACD(symbol string, fastPeriod, slowPeriod, signalPeriod int) (float64, float64, float64, error)
+	ADX(symbol string, period int) (float64, error)
+	SuperTrend(symbol string, period int, multiplier float64) (float64, error)
+	ParbolicSAR(symbol string, step, max float64) (float64, error)
 
 	// Logging
 	Log(level string, message string, fields map[string]interface{})

@@ -10,15 +10,17 @@ import (
 
 // StrategyContext implements the strategy.Context interface for backtesting
 type StrategyContext struct {
-	engine *Engine
-	logger zerolog.Logger
+	engine       *Engine
+	logger       zerolog.Logger
+	priceHistory map[string][]float64 // symbol -> slice of historical prices
 }
 
 // NewStrategyContext creates a new strategy context
 func NewStrategyContext(engine *Engine) *StrategyContext {
 	return &StrategyContext{
-		engine: engine,
-		logger: logging.GetLogger("strategy"),
+		engine:       engine,
+		logger:       logging.GetLogger("strategy"),
+		priceHistory: make(map[string][]float64),
 	}
 }
 
@@ -37,25 +39,40 @@ func (sc *StrategyContext) GetCash() float64 {
 	return sc.engine.portfolio.GetCash()
 }
 
-// GetBars returns historical bars for a symbol (simplified implementation)
-func (sc *StrategyContext) GetBars(symbol string, timeframe string, limit int) ([]strategy.BarData, error) {
-	// This is a simplified implementation
-	// In a full implementation, we'd maintain historical data for quick access
-	return []strategy.BarData{}, fmt.Errorf("GetBars not fully implemented in backtester context")
+// UpdatePriceHistory updates the price history for technical indicators
+func (sc *StrategyContext) UpdatePriceHistory(dataPoint strategy.DataPoint) {
+	for symbol, bar := range dataPoint.Bars {
+		if sc.priceHistory[symbol] == nil {
+			sc.priceHistory[symbol] = make([]float64, 0)
+		}
+		sc.priceHistory[symbol] = append(sc.priceHistory[symbol], bar.Close)
+
+		// Keep only last 200 prices to avoid memory issues
+		if len(sc.priceHistory[symbol]) > 200 {
+			sc.priceHistory[symbol] = sc.priceHistory[symbol][1:]
+		}
+	}
 }
 
-// GetLastBar returns the last bar for a symbol (simplified implementation)
-func (sc *StrategyContext) GetLastBar(symbol string, timeframe string) (*strategy.BarData, error) {
-	// This is a simplified implementation
-	// In a full implementation, we'd track the last bar for each symbol
-	return nil, fmt.Errorf("GetLastBar not fully implemented in backtester context")
-}
-
-// SMA calculates Simple Moving Average (simplified implementation)
+// SMA calculates Simple Moving Average
 func (sc *StrategyContext) SMA(symbol string, period int) (float64, error) {
-	// This is a simplified implementation
-	// In a full implementation, we'd calculate SMA from historical data
-	return 0, fmt.Errorf("SMA not fully implemented in backtester context")
+	prices, exists := sc.priceHistory[symbol]
+	if !exists {
+		return 0, fmt.Errorf("no price history available for symbol %s", symbol)
+	}
+
+	if len(prices) < period {
+		return 0, fmt.Errorf("insufficient data: need %d periods, have %d", period, len(prices))
+	}
+
+	// Calculate SMA using the last 'period' prices
+	sum := 0.0
+	start := len(prices) - period
+	for i := start; i < len(prices); i++ {
+		sum += prices[i]
+	}
+
+	return sum / float64(period), nil
 }
 
 // EMA calculates Exponential Moving Average (simplified implementation)
@@ -72,9 +89,33 @@ func (sc *StrategyContext) RSI(symbol string, period int) (float64, error) {
 	return 0, fmt.Errorf("RSI not fully implemented in backtester context")
 }
 
+func (sc *StrategyContext) MACD(symbol string, fastPeriod, slowPeriod, signalPeriod int) (float64, float64, float64, error) {
+	// This is a simplified implementation
+	// In a full implementation, we'd calculate MACD from historical data
+	return 0, 0, 0, fmt.Errorf("MACD not fully implemented in backtester context")
+}
+
+func (sc *StrategyContext) ADX(symbol string, period int) (float64, error) {
+	// This is a simplified implementation
+	// In a full implementation, we'd calculate ADX from historical data
+	return 0, fmt.Errorf("ADX not fully implemented in backtester context")
+}
+
+func (sc *StrategyContext) SuperTrend(symbol string, period int, multiplier float64) (float64, error) {
+	// This is a simplified implementation
+	// In a full implementation, we'd calculate SuperTrend from historical data
+	return 0, fmt.Errorf("SuperTrend not fully implemented in backtester context")
+}
+
+func (sc *StrategyContext) ParbolicSAR(symbol string, step, max float64) (float64, error) {
+	// This is a simplified implementation
+	// In a full implementation, we'd calculate Parbolic SAR from historical data
+	return 0, fmt.Errorf("ParbolicSAR not fully implemented in backtester context")
+}
+
 // Log logs a message with the given level and fields
 func (sc *StrategyContext) Log(level string, message string, fields map[string]interface{}) {
-	event := sc.logger.WithLevel(zerolog.InfoLevel)
+	var event *zerolog.Event
 
 	switch level {
 	case "trace":

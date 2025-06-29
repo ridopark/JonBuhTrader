@@ -119,7 +119,9 @@ func main() {
 	case "buy_and_hold":
 		strategyInstance = examples.NewBuyAndHoldStrategy(symbols, *initialCapital)
 	case "ma_crossover":
-		strategyInstance = examples.NewMovingAverageCrossoverStrategy(5, 20) // 5-period and 20-period MA
+		ma := examples.NewMovingAverageCrossoverStrategy(5, 20) // 5-period and 20-period MA
+		ma.SetSymbols(symbols)
+		strategyInstance = ma
 	default:
 		logger.Fatal().Str("strategy", *strategyFlag).Msg("Unknown strategy. Available strategies: buy_and_hold, ma_crossover")
 	}

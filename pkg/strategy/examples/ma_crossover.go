@@ -23,16 +23,23 @@ func NewMovingAverageCrossoverStrategy(shortPeriod, longPeriod int) *MovingAvera
 		panic("short period must be less than long period")
 	}
 
+	base := strategy.NewBaseStrategy("MovingAverageCrossover", map[string]interface{}{
+		"shortPeriod": shortPeriod,
+		"longPeriod":  longPeriod,
+	})
+
 	return &MovingAverageCrossoverStrategy{
-		BaseStrategy: strategy.NewBaseStrategy("MovingAverageCrossover", map[string]interface{}{
-			"shortPeriod": shortPeriod,
-			"longPeriod":  longPeriod,
-		}),
-		shortPeriod: shortPeriod,
-		longPeriod:  longPeriod,
-		prices:      make([]float64, 0, longPeriod+1),
-		position:    false,
+		BaseStrategy: base,
+		shortPeriod:  shortPeriod,
+		longPeriod:   longPeriod,
+		prices:       make([]float64, 0, longPeriod+1),
+		position:     false,
 	}
+}
+
+// SetSymbols sets the symbols for this strategy (called by the engine)
+func (s *MovingAverageCrossoverStrategy) SetSymbols(symbols []string) {
+	s.BaseStrategy.SetSymbols(symbols)
 }
 
 // Initialize sets up the strategy
@@ -58,8 +65,36 @@ func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataP
 			s.prices = s.prices[1:]
 		}
 
+		ctx.Log("debug", "Price history updated", map[string]interface{}{
+			"symbol":        symbol,
+			"price":         dataPoint.Bars[symbol].Close,
+			"history_count": len(s.prices),
+			"need_count":    s.longPeriod,
+		})
+
 		// Need at least longPeriod prices to calculate moving averages
 		if len(s.prices) < s.longPeriod {
+			// Test the context SMA function even with limited data
+			if len(s.prices) >= s.shortPeriod {
+				contextShortSMA, err := ctx.SMA(symbol, s.shortPeriod)
+				if err == nil {
+					internalSMA := s.calculateSMA(s.shortPeriod)
+					ctx.Log("debug", "SMA comparison (early)", map[string]interface{}{
+						"symbol":       symbol,
+						"internal_sma": internalSMA,
+						"context_sma":  contextShortSMA,
+						"price":        dataPoint.Bars[symbol].Close,
+						"period":       s.shortPeriod,
+						"data_points":  len(s.prices),
+					})
+				} else {
+					ctx.Log("debug", "Context SMA error", map[string]interface{}{
+						"symbol": symbol,
+						"error":  err.Error(),
+						"period": s.shortPeriod,
+					})
+				}
+			}
 			return orders, nil
 		}
 
@@ -69,6 +104,18 @@ func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataP
 
 		s.currentShortMA = s.calculateSMA(s.shortPeriod)
 		s.currentLongMA = s.calculateSMA(s.longPeriod)
+
+		// Test the context SMA function (for comparison)
+		contextShortSMA, err := ctx.SMA(symbol, s.shortPeriod)
+		if err == nil {
+			ctx.Log("debug", "SMA comparison", map[string]interface{}{
+				"symbol":       symbol,
+				"internal_sma": s.currentShortMA,
+				"context_sma":  contextShortSMA,
+				"price":        dataPoint.Bars[symbol].Close,
+				"period":       s.shortPeriod,
+			})
+		}
 
 		// Need at least one previous calculation for crossover detection
 		if s.lastShortMA == 0 || s.lastLongMA == 0 {

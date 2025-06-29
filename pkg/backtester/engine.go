@@ -99,6 +99,9 @@ func (e *Engine) Run() error {
 
 		dataPointCount++
 
+		// Update price history for technical indicators
+		e.ctx.UpdatePriceHistory(*dataPoint)
+
 		// Get orders from strategy for this bar
 		orders, err := e.strategy.OnDataPoint(e.ctx, *dataPoint)
 		if err != nil {
