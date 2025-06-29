@@ -126,8 +126,12 @@ func main() {
 		multi := examples.NewMultiIndicatorStrategy()
 		multi.SetSymbols(symbols)
 		strategyInstance = multi
+	case "support_resistance":
+		sr := examples.NewSupportResistanceStrategy()
+		sr.SetSymbols(symbols)
+		strategyInstance = sr
 	default:
-		logger.Fatal().Str("strategy", *strategyFlag).Msg("Unknown strategy. Available strategies: buy_and_hold, ma_crossover, multi_indicator")
+		logger.Fatal().Str("strategy", *strategyFlag).Msg("Unknown strategy. Available strategies: buy_and_hold, ma_crossover, multi_indicator, support_resistance")
 	}
 
 	// Get trading configuration from environment variables
