@@ -1,8 +1,20 @@
 package examples
 
 import (
+	"sort"
+
 	"github.com/ridopark/JonBuhTrader/pkg/strategy"
 )
+
+// MACrossoverSignal represents a potential trading signal
+type MACrossoverSignal struct {
+	Symbol     string
+	Bar        strategy.BarData
+	SignalType string // "buy" or "sell"
+	Price      float64
+	ShortMA    float64
+	LongMA     float64
+}
 
 // MovingAverageCrossoverStrategy implements a simple moving average crossover strategy
 type MovingAverageCrossoverStrategy struct {
@@ -54,8 +66,10 @@ func (s *MovingAverageCrossoverStrategy) Initialize(ctx strategy.Context) error 
 
 // OnBar processes each bar and generates trading signals
 func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataPoint strategy.DataPoint) ([]strategy.Order, error) {
+	var potentialSignals []MACrossoverSignal
 	var orders []strategy.Order
 
+	// Phase 1: Analyze all symbols and collect potential buy signals
 	for _, symbol := range s.GetSymbols() {
 		// Add current price to our price history
 		s.prices = append(s.prices, dataPoint.Bars[symbol].Close)
@@ -95,7 +109,7 @@ func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataP
 					})
 				}
 			}
-			return orders, nil
+			continue
 		}
 
 		// Calculate moving averages
@@ -119,7 +133,7 @@ func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataP
 
 		// Need at least one previous calculation for crossover detection
 		if s.lastShortMA == 0 || s.lastLongMA == 0 {
-			return orders, nil
+			continue
 		}
 
 		// Check for crossover signals
@@ -127,36 +141,30 @@ func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataP
 		currentCross := s.currentShortMA > s.currentLongMA
 
 		position := ctx.GetPosition(symbol)
-		cash := ctx.GetCash()
 
 		// Bullish crossover: short MA crosses above long MA
 		if !prevCross && currentCross && !s.position {
-			// Buy signal
-			quantity := s.calculatePositionSize(cash, dataPoint.Bars[symbol].Close, 0.95) // Use 95% of available cash
-			if quantity > 0 {
-				order := strategy.Order{
-					Symbol:   symbol,
-					Side:     strategy.OrderSideBuy,
-					Type:     strategy.OrderTypeMarket,
-					Quantity: quantity,
-					Strategy: s.GetName(),
-				}
-				orders = append(orders, order)
-				s.position = true
+			// Collect potential buy signal
+			potentialSignals = append(potentialSignals, MACrossoverSignal{
+				Symbol:     symbol,
+				Bar:        dataPoint.Bars[symbol],
+				SignalType: "buy",
+				Price:      dataPoint.Bars[symbol].Close,
+				ShortMA:    s.currentShortMA,
+				LongMA:     s.currentLongMA,
+			})
 
-				ctx.Log("info", "Bullish crossover detected - buying", map[string]interface{}{
-					"symbol":   symbol,
-					"price":    dataPoint.Bars[symbol].Close,
-					"quantity": quantity,
-					"shortMA":  s.currentShortMA,
-					"longMA":   s.currentLongMA,
-				})
-			}
+			ctx.Log("debug", "MA Crossover potential BUY signal", map[string]interface{}{
+				"symbol":  symbol,
+				"price":   dataPoint.Bars[symbol].Close,
+				"shortMA": s.currentShortMA,
+				"longMA":  s.currentLongMA,
+			})
 		}
 
 		// Bearish crossover: short MA crosses below long MA
 		if prevCross && !currentCross && s.position && position != nil && position.Quantity > 0 {
-			// Sell signal
+			// Sell signal (immediate execution)
 			order := strategy.Order{
 				Symbol:   symbol,
 				Side:     strategy.OrderSideSell,
@@ -177,7 +185,83 @@ func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataP
 		}
 	}
 
+	// Phase 2: Allocate capital to buy signals
+	if len(potentialSignals) > 0 {
+		buyOrders := s.allocateCapitalToSignals(ctx, potentialSignals)
+		orders = append(orders, buyOrders...)
+	}
+
 	return orders, nil
+}
+
+// allocateCapitalToSignals prioritizes and allocates capital to trading signals
+func (s *MovingAverageCrossoverStrategy) allocateCapitalToSignals(ctx strategy.Context, signals []MACrossoverSignal) []strategy.Order {
+	if len(signals) == 0 {
+		return nil
+	}
+
+	// Sort signals by symbol for deterministic ordering
+	sort.Slice(signals, func(i, j int) bool {
+		return signals[i].Symbol < signals[j].Symbol
+	})
+
+	var orders []strategy.Order
+	availableCash := ctx.GetCash()
+
+	ctx.Log("debug", "Allocating capital to MA Crossover signals", map[string]interface{}{
+		"total_signals":  len(signals),
+		"available_cash": availableCash,
+	})
+
+	for _, signal := range signals {
+		if availableCash <= 0 {
+			ctx.Log("debug", "No more cash available for allocation", map[string]interface{}{
+				"remaining_signals": len(signals) - len(orders),
+			})
+			break
+		}
+
+		// Calculate position size based on current available cash (use 95% allocation)
+		quantity := s.calculatePositionSize(availableCash, signal.Price, 0.95)
+		if quantity > 0 {
+			cost := quantity * signal.Price
+			if cost <= availableCash {
+				order := strategy.Order{
+					Symbol:   signal.Symbol,
+					Side:     strategy.OrderSideBuy,
+					Type:     strategy.OrderTypeMarket,
+					Quantity: quantity,
+					Strategy: s.GetName(),
+				}
+				orders = append(orders, order)
+				availableCash -= cost
+				s.position = true // Update position state
+
+				ctx.Log("info", "Bullish crossover detected - buying", map[string]interface{}{
+					"symbol":         signal.Symbol,
+					"price":          signal.Price,
+					"quantity":       quantity,
+					"cost":           cost,
+					"shortMA":        signal.ShortMA,
+					"longMA":         signal.LongMA,
+					"remaining_cash": availableCash,
+				})
+			} else {
+				ctx.Log("debug", "Insufficient cash for signal", map[string]interface{}{
+					"symbol":         signal.Symbol,
+					"required_cost":  cost,
+					"available_cash": availableCash,
+				})
+			}
+		}
+	}
+
+	ctx.Log("debug", "Capital allocation completed", map[string]interface{}{
+		"orders_created": len(orders),
+		"remaining_cash": availableCash,
+	})
+
+	return orders
 }
 
 // OnTrade handles trade execution notifications

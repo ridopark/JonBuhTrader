@@ -1,8 +1,19 @@
 package examples
 
 import (
+	"sort"
+
 	"github.com/ridopark/JonBuhTrader/pkg/strategy"
 )
+
+// MultiIndicatorSignal represents a potential trading signal with priority
+type MultiIndicatorSignal struct {
+	Symbol     string
+	Bar        strategy.BarData
+	SignalType string // "buy" or "sell"
+	Confidence int    // Number of confirming indicators
+	Price      float64
+}
 
 // MultiIndicatorStrategy implements a strategy that uses multiple technical indicators
 type MultiIndicatorStrategy struct {
@@ -70,8 +81,10 @@ func (s *MultiIndicatorStrategy) Initialize(ctx strategy.Context) error {
 
 // OnDataPoint processes each data point and generates trading signals
 func (s *MultiIndicatorStrategy) OnDataPoint(ctx strategy.Context, dataPoint strategy.DataPoint) ([]strategy.Order, error) {
+	var potentialSignals []MultiIndicatorSignal
 	var orders []strategy.Order
 
+	// Phase 1: Collect all potential buy signals
 	for _, symbol := range s.GetSymbols() {
 		bar, exists := dataPoint.Bars[symbol]
 		if !exists {
@@ -90,7 +103,6 @@ func (s *MultiIndicatorStrategy) OnDataPoint(ctx strategy.Context, dataPoint str
 		}
 
 		position := ctx.GetPosition(symbol)
-		cash := ctx.GetCash()
 
 		// Handle nil position (no position exists)
 		positionQuantity := 0.0
@@ -103,13 +115,10 @@ func (s *MultiIndicatorStrategy) OnDataPoint(ctx strategy.Context, dataPoint str
 			"symbol":   symbol,
 			"price":    bar.Close,
 			"position": positionQuantity,
-			"cash":     cash,
 			"rsi":      rsi,
+			"sma":      sma,
 		}
 
-		if smaErr == nil {
-			logFields["sma"] = sma
-		}
 		if emaErr == nil {
 			logFields["ema"] = ema
 		}
@@ -167,25 +176,20 @@ func (s *MultiIndicatorStrategy) OnDataPoint(ctx strategy.Context, dataPoint str
 
 			// Require at least 2 buy signals
 			if buySignals >= 2 {
-				quantity := s.calculatePositionSize(cash, bar.Close, s.positionSize)
-				if quantity > 0 {
-					order := strategy.Order{
-						Symbol:   symbol,
-						Side:     strategy.OrderSideBuy,
-						Type:     strategy.OrderTypeMarket,
-						Quantity: quantity,
-						Strategy: s.GetName(),
-					}
-					orders = append(orders, order)
+				potentialSignals = append(potentialSignals, MultiIndicatorSignal{
+					Symbol:     symbol,
+					Bar:        bar,
+					SignalType: "buy",
+					Confidence: buySignals,
+					Price:      bar.Close,
+				})
 
-					ctx.Log("info", "Multi-indicator BUY signal", map[string]interface{}{
-						"symbol":     symbol,
-						"price":      bar.Close,
-						"quantity":   quantity,
-						"buySignals": buySignals,
-						"rsi":        rsi,
-					})
-				}
+				ctx.Log("debug", "Multi-indicator potential BUY signal", map[string]interface{}{
+					"symbol":     symbol,
+					"price":      bar.Close,
+					"buySignals": buySignals,
+					"rsi":        rsi,
+				})
 			}
 		}
 
@@ -255,6 +259,12 @@ func (s *MultiIndicatorStrategy) OnDataPoint(ctx strategy.Context, dataPoint str
 		}
 	}
 
+	// Phase 2: Allocate capital to buy signals
+	if len(potentialSignals) > 0 {
+		buyOrders := s.allocateCapitalToSignals(ctx, potentialSignals)
+		orders = append(orders, buyOrders...)
+	}
+
 	return orders, nil
 }
 
@@ -272,4 +282,76 @@ func (s *MultiIndicatorStrategy) calculatePositionSize(cash, price, allocation f
 	quantity := targetValue / price
 	// Round down to nearest whole number (can't buy fractional shares)
 	return float64(int(quantity))
+}
+
+// allocateCapitalToSignals prioritizes and allocates capital to trading signals
+func (s *MultiIndicatorStrategy) allocateCapitalToSignals(ctx strategy.Context, signals []MultiIndicatorSignal) []strategy.Order {
+	if len(signals) == 0 {
+		return nil
+	}
+
+	// Sort signals by confidence (number of confirming indicators), then by symbol for deterministic ordering
+	sort.Slice(signals, func(i, j int) bool {
+		if signals[i].Confidence != signals[j].Confidence {
+			return signals[i].Confidence > signals[j].Confidence // Higher confidence first
+		}
+		return signals[i].Symbol < signals[j].Symbol // Alphabetical for deterministic ordering
+	})
+
+	var orders []strategy.Order
+	availableCash := ctx.GetCash()
+
+	ctx.Log("debug", "Allocating capital to Multi-Indicator signals", map[string]interface{}{
+		"total_signals":  len(signals),
+		"available_cash": availableCash,
+		"position_size":  s.positionSize,
+	})
+
+	for _, signal := range signals {
+		if availableCash <= 0 {
+			ctx.Log("debug", "No more cash available for allocation", map[string]interface{}{
+				"remaining_signals": len(signals) - len(orders),
+			})
+			break
+		}
+
+		// Calculate position size based on current available cash
+		quantity := s.calculatePositionSize(availableCash, signal.Price, s.positionSize)
+		if quantity > 0 {
+			cost := quantity * signal.Price
+			if cost <= availableCash {
+				order := strategy.Order{
+					Symbol:   signal.Symbol,
+					Side:     strategy.OrderSideBuy,
+					Type:     strategy.OrderTypeMarket,
+					Quantity: quantity,
+					Strategy: s.GetName(),
+				}
+				orders = append(orders, order)
+				availableCash -= cost
+
+				ctx.Log("info", "Multi-Indicator BUY signal allocated", map[string]interface{}{
+					"symbol":         signal.Symbol,
+					"price":          signal.Price,
+					"quantity":       quantity,
+					"cost":           cost,
+					"confidence":     signal.Confidence,
+					"remaining_cash": availableCash,
+				})
+			} else {
+				ctx.Log("debug", "Insufficient cash for signal", map[string]interface{}{
+					"symbol":         signal.Symbol,
+					"required_cost":  cost,
+					"available_cash": availableCash,
+				})
+			}
+		}
+	}
+
+	ctx.Log("debug", "Capital allocation completed", map[string]interface{}{
+		"orders_created": len(orders),
+		"remaining_cash": availableCash,
+	})
+
+	return orders
 }
