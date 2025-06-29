@@ -1,8 +1,6 @@
 package examples
 
 import (
-	"sort"
-
 	"github.com/ridopark/JonBuhTrader/pkg/strategy"
 )
 
@@ -27,6 +25,7 @@ type MovingAverageCrossoverStrategy struct {
 	lastLongMA     float64
 	currentShortMA float64
 	currentLongMA  float64
+	allocator      *strategy.CapitalAllocator // Capital allocation system
 }
 
 // NewMovingAverageCrossoverStrategy creates a new moving average crossover strategy
@@ -40,12 +39,19 @@ func NewMovingAverageCrossoverStrategy(shortPeriod, longPeriod int) *MovingAvera
 		"longPeriod":  longPeriod,
 	})
 
+	// Configure capital allocation
+	allocConfig := strategy.DefaultAllocationConfig()
+	allocConfig.Method = strategy.AllocateSequential
+	allocConfig.PositionSize = 0.95 // Use 95% of available cash
+	allocConfig.MaxPositions = 3    // Max 3 positions
+
 	return &MovingAverageCrossoverStrategy{
 		BaseStrategy: base,
 		shortPeriod:  shortPeriod,
 		longPeriod:   longPeriod,
 		prices:       make([]float64, 0, longPeriod+1),
 		position:     false,
+		allocator:    strategy.NewCapitalAllocator(allocConfig),
 	}
 }
 
@@ -66,7 +72,7 @@ func (s *MovingAverageCrossoverStrategy) Initialize(ctx strategy.Context) error 
 
 // OnBar processes each bar and generates trading signals
 func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataPoint strategy.DataPoint) ([]strategy.Order, error) {
-	var potentialSignals []MACrossoverSignal
+	var potentialSignals []strategy.TradingSignal
 	var orders []strategy.Order
 
 	// Phase 1: Analyze all symbols and collect potential buy signals
@@ -144,21 +150,27 @@ func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataP
 
 		// Bullish crossover: short MA crosses above long MA
 		if !prevCross && currentCross && !s.position {
+			// Calculate confidence based on the strength of the crossover
+			confidence := s.calculateCrossoverConfidence(s.currentShortMA, s.currentLongMA)
+
 			// Collect potential buy signal
-			potentialSignals = append(potentialSignals, MACrossoverSignal{
+			potentialSignals = append(potentialSignals, MACrossoverSignalImpl{
 				Symbol:     symbol,
 				Bar:        dataPoint.Bars[symbol],
-				SignalType: "buy",
+				SignalType: "bullish_crossover",
 				Price:      dataPoint.Bars[symbol].Close,
 				ShortMA:    s.currentShortMA,
 				LongMA:     s.currentLongMA,
+				Confidence: confidence,
+				Priority:   confidence, // Use confidence as priority
 			})
 
 			ctx.Log("debug", "MA Crossover potential BUY signal", map[string]interface{}{
-				"symbol":  symbol,
-				"price":   dataPoint.Bars[symbol].Close,
-				"shortMA": s.currentShortMA,
-				"longMA":  s.currentLongMA,
+				"symbol":     symbol,
+				"price":      dataPoint.Bars[symbol].Close,
+				"shortMA":    s.currentShortMA,
+				"longMA":     s.currentLongMA,
+				"confidence": confidence,
 			})
 		}
 
@@ -185,83 +197,13 @@ func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataP
 		}
 	}
 
-	// Phase 2: Allocate capital to buy signals
+	// Phase 2: Allocate capital to buy signals using the common allocation system
 	if len(potentialSignals) > 0 {
-		buyOrders := s.allocateCapitalToSignals(ctx, potentialSignals)
+		buyOrders := s.allocator.AllocateCapital(ctx, potentialSignals, s.GetName())
 		orders = append(orders, buyOrders...)
 	}
 
 	return orders, nil
-}
-
-// allocateCapitalToSignals prioritizes and allocates capital to trading signals
-func (s *MovingAverageCrossoverStrategy) allocateCapitalToSignals(ctx strategy.Context, signals []MACrossoverSignal) []strategy.Order {
-	if len(signals) == 0 {
-		return nil
-	}
-
-	// Sort signals by symbol for deterministic ordering
-	sort.Slice(signals, func(i, j int) bool {
-		return signals[i].Symbol < signals[j].Symbol
-	})
-
-	var orders []strategy.Order
-	availableCash := ctx.GetCash()
-
-	ctx.Log("debug", "Allocating capital to MA Crossover signals", map[string]interface{}{
-		"total_signals":  len(signals),
-		"available_cash": availableCash,
-	})
-
-	for _, signal := range signals {
-		if availableCash <= 0 {
-			ctx.Log("debug", "No more cash available for allocation", map[string]interface{}{
-				"remaining_signals": len(signals) - len(orders),
-			})
-			break
-		}
-
-		// Calculate position size based on current available cash (use 95% allocation)
-		quantity := s.calculatePositionSize(availableCash, signal.Price, 0.95)
-		if quantity > 0 {
-			cost := quantity * signal.Price
-			if cost <= availableCash {
-				order := strategy.Order{
-					Symbol:   signal.Symbol,
-					Side:     strategy.OrderSideBuy,
-					Type:     strategy.OrderTypeMarket,
-					Quantity: quantity,
-					Strategy: s.GetName(),
-				}
-				orders = append(orders, order)
-				availableCash -= cost
-				s.position = true // Update position state
-
-				ctx.Log("info", "Bullish crossover detected - buying", map[string]interface{}{
-					"symbol":         signal.Symbol,
-					"price":          signal.Price,
-					"quantity":       quantity,
-					"cost":           cost,
-					"shortMA":        signal.ShortMA,
-					"longMA":         signal.LongMA,
-					"remaining_cash": availableCash,
-				})
-			} else {
-				ctx.Log("debug", "Insufficient cash for signal", map[string]interface{}{
-					"symbol":         signal.Symbol,
-					"required_cost":  cost,
-					"available_cash": availableCash,
-				})
-			}
-		}
-	}
-
-	ctx.Log("debug", "Capital allocation completed", map[string]interface{}{
-		"orders_created": len(orders),
-		"remaining_cash": availableCash,
-	})
-
-	return orders
 }
 
 // OnTrade handles trade execution notifications
@@ -306,16 +248,20 @@ func (s *MovingAverageCrossoverStrategy) calculateSMA(period int) float64 {
 	return sum / float64(period)
 }
 
-// calculatePositionSize calculates position size based on available cash and allocation percentage
-func (s *MovingAverageCrossoverStrategy) calculatePositionSize(cash, price, allocation float64) float64 {
-	if cash <= 0 || price <= 0 || allocation <= 0 {
-		return 0
+// calculateCrossoverConfidence calculates confidence based on the strength of the crossover
+func (s *MovingAverageCrossoverStrategy) calculateCrossoverConfidence(shortMA, longMA float64) float64 {
+	// Simple confidence calculation based on the gap between moving averages
+	// Larger gaps indicate stronger signals
+	gap := (shortMA - longMA) / longMA
+	confidence := 0.5 + (gap * 10) // Base confidence of 0.5, adjust based on gap
+
+	// Clamp confidence between 0.1 and 1.0
+	if confidence > 1.0 {
+		confidence = 1.0
+	}
+	if confidence < 0.1 {
+		confidence = 0.1
 	}
 
-	// Calculate quantity based on allocation percentage
-	targetValue := cash * allocation
-	quantity := targetValue / price
-
-	// Round down to nearest whole number (can't buy fractional shares)
-	return float64(int(quantity))
+	return confidence
 }

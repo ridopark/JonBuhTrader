@@ -44,6 +44,9 @@ type SupportResistanceStrategy struct {
 	volatilityPeriod    int     // Period for volatility calculation
 	confidenceThreshold float64 // Minimum confidence for trading
 
+	// Capital allocation
+	allocator *strategy.CapitalAllocator
+
 	// Internal state
 	levels          map[string][]SupportResistanceLevel // Support/resistance levels per symbol
 	priceHistory    map[string][]float64                // Price history per symbol
@@ -114,14 +117,26 @@ func NewSupportResistanceStrategy() *SupportResistanceStrategy {
 		multiTimeframe:       multiTimeframe,
 		volatilityPeriod:     volatilityPeriod,
 		confidenceThreshold:  confidenceThreshold,
-		levels:               make(map[string][]SupportResistanceLevel),
-		priceHistory:         make(map[string][]float64),
-		volumeHistory:        make(map[string][]float64),
-		volatility:           make(map[string]float64),
-		trend:                make(map[string]string),
-		barCount:             make(map[string]int),
-		breakoutBars:         make(map[string]int),
-		failedBreakouts:      make(map[string]map[float64]int),
+		allocator: strategy.NewCapitalAllocator(strategy.AllocationConfig{
+			Method:           strategy.AllocateByConfidence,
+			MaxPositions:     3,
+			PositionSize:     positionSize,
+			MinCashBuffer:    100.0, // $100 minimum cash
+			SlippageBuffer:   0.02,  // 2% buffer for fees/slippage
+			VolatilityAdjust: true,
+			VolatilityCallback: func(symbol string) float64 {
+				// Will be set up properly in SetSymbols - for now return default
+				return 0.02 // 2% default volatility
+			},
+		}),
+		levels:          make(map[string][]SupportResistanceLevel),
+		priceHistory:    make(map[string][]float64),
+		volumeHistory:   make(map[string][]float64),
+		volatility:      make(map[string]float64),
+		trend:           make(map[string]string),
+		barCount:        make(map[string]int),
+		breakoutBars:    make(map[string]int),
+		failedBreakouts: make(map[string]map[float64]int),
 	}
 }
 
@@ -160,8 +175,8 @@ func (s *SupportResistanceStrategy) Initialize(ctx strategy.Context) error {
 	return nil
 }
 
-// PotentialSignal represents a potential trading signal with priority
-type PotentialSignal struct {
+// signalData holds internal signal information before conversion to TradingSignal
+type signalData struct {
 	Symbol     string
 	Bar        strategy.BarData
 	Level      SupportResistanceLevel
@@ -173,7 +188,7 @@ type PotentialSignal struct {
 // OnDataPoint processes each data point and generates trading signals
 func (s *SupportResistanceStrategy) OnDataPoint(ctx strategy.Context, dataPoint strategy.DataPoint) ([]strategy.Order, error) {
 	var orders []strategy.Order
-	var potentialSignals []PotentialSignal
+	var signals []strategy.TradingSignal
 
 	// First pass: Update all data and collect exit signals
 	for _, symbol := range s.GetSymbols() {
@@ -227,7 +242,15 @@ func (s *SupportResistanceStrategy) OnDataPoint(ctx strategy.Context, dataPoint 
 		if positionQuantity == 0 {
 			signal := s.evaluateEntrySignal(symbol, bar)
 			if signal != nil {
-				potentialSignals = append(potentialSignals, *signal)
+				signals = append(signals, SupportResistanceSignalImpl{
+					Symbol:     signal.Symbol,
+					Bar:        signal.Bar,
+					Level:      signal.Level,
+					SignalType: signal.SignalType,
+					Price:      signal.Price,
+					Confidence: signal.Confidence,
+					Priority:   signal.Confidence, // Use confidence as priority
+				})
 			}
 		}
 
@@ -238,8 +261,19 @@ func (s *SupportResistanceStrategy) OnDataPoint(ctx strategy.Context, dataPoint 
 	}
 
 	// Second pass: Process entry signals with capital allocation
-	if len(potentialSignals) > 0 {
-		entryOrders := s.allocateCapitalToSignals(ctx, potentialSignals)
+	if len(signals) > 0 {
+		entryOrders := s.allocator.AllocateCapital(ctx, signals, s.GetName())
+
+		// Update breakout tracking for resistance breakout signals
+		for _, order := range entryOrders {
+			for _, signal := range signals {
+				if signal.GetSymbol() == order.Symbol && signal.GetSignalType() == "resistance_breakout" {
+					s.breakoutBars[order.Symbol] = 1
+					break
+				}
+			}
+		}
+
 		orders = append(orders, entryOrders...)
 	}
 
@@ -381,7 +415,7 @@ func (s *SupportResistanceStrategy) determineLevelType(symbol string, levelPrice
 }
 
 // evaluateEntrySignal evaluates if a symbol has a valid entry signal
-func (s *SupportResistanceStrategy) evaluateEntrySignal(symbol string, bar strategy.BarData) *PotentialSignal {
+func (s *SupportResistanceStrategy) evaluateEntrySignal(symbol string, bar strategy.BarData) *signalData {
 	levels := s.levels[symbol]
 	if len(levels) == 0 {
 		return nil
@@ -415,7 +449,7 @@ func (s *SupportResistanceStrategy) evaluateEntrySignal(symbol string, bar strat
 				continue
 			}
 
-			return &PotentialSignal{
+			return &signalData{
 				Symbol:     symbol,
 				Bar:        bar,
 				Level:      level,
@@ -435,7 +469,7 @@ func (s *SupportResistanceStrategy) evaluateEntrySignal(symbol string, bar strat
 				continue
 			}
 
-			return &PotentialSignal{
+			return &signalData{
 				Symbol:     symbol,
 				Bar:        bar,
 				Level:      level,
@@ -447,110 +481,6 @@ func (s *SupportResistanceStrategy) evaluateEntrySignal(symbol string, bar strat
 	}
 
 	return nil
-}
-
-// allocateCapitalToSignals prioritizes and allocates capital to trading signals
-func (s *SupportResistanceStrategy) allocateCapitalToSignals(ctx strategy.Context, signals []PotentialSignal) []strategy.Order {
-	if len(signals) == 0 {
-		return nil
-	}
-
-	var orders []strategy.Order
-	availableCash := ctx.GetCash()
-
-	// Sort signals by confidence score (highest first)
-	sort.Slice(signals, func(i, j int) bool {
-		return signals[i].Confidence > signals[j].Confidence
-	})
-
-	// Calculate how to split capital among signals
-	maxPositions := len(signals)
-	if maxPositions > 3 { // Limit to max 3 simultaneous positions
-		maxPositions = 3
-		signals = signals[:3] // Take only the top 3
-	}
-
-	// Allocate capital proportionally to confidence, but ensure we don't exceed available cash
-	totalConfidence := 0.0
-	for _, signal := range signals {
-		totalConfidence += signal.Confidence
-	}
-
-	// Track remaining cash as we allocate
-	remainingCash := availableCash
-
-	for i, signal := range signals {
-		if remainingCash <= 100 { // Need at least $100 to trade
-			break
-		}
-
-		// Calculate allocation for this signal
-		var allocation float64
-		if i == len(signals)-1 {
-			// Last signal gets whatever is left (up to position size limit)
-			allocation = math.Min(s.positionSize, remainingCash/availableCash)
-		} else {
-			// Proportional allocation based on confidence
-			confidenceWeight := signal.Confidence / totalConfidence
-			baseAllocation := s.positionSize / float64(maxPositions)                // Equal base allocation
-			confidenceBonus := (confidenceWeight - 1.0/float64(len(signals))) * 0.5 // Up to 50% bonus
-			allocation = baseAllocation + confidenceBonus
-
-			// Ensure allocation doesn't exceed remaining cash ratio
-			maxAllocationForRemaining := remainingCash / availableCash
-			allocation = math.Min(allocation, maxAllocationForRemaining)
-		}
-
-		// Calculate position size with volatility adjustment
-		quantity := s.calculateVolatilityAdjustedPositionSize(signal.Symbol, remainingCash, signal.Price, allocation)
-
-		if quantity > 0 {
-			orderValue := quantity * signal.Price
-
-			// Double-check we have enough cash (with some buffer for slippage/fees)
-			if orderValue <= remainingCash*0.98 { // 2% buffer
-				tolerance := s.getAdaptiveTolerance(signal.Symbol)
-
-				ctx.Log("info", "Enhanced "+signal.SignalType+" BUY signal", map[string]interface{}{
-					"symbol":        signal.Symbol,
-					"price":         signal.Price,
-					"level":         signal.Level.Price,
-					"strength":      signal.Level.Strength,
-					"confidence":    signal.Confidence,
-					"tolerance":     tolerance * 100,
-					"trend":         s.trend[signal.Symbol],
-					"volatility":    s.volatility[signal.Symbol] * 100,
-					"quantity":      quantity,
-					"allocation":    allocation,
-					"orderValue":    orderValue,
-					"remainingCash": remainingCash,
-				})
-
-				orders = append(orders, strategy.Order{
-					Symbol:   signal.Symbol,
-					Side:     strategy.OrderSideBuy,
-					Type:     strategy.OrderTypeMarket,
-					Quantity: quantity,
-					Strategy: s.GetName(),
-				})
-
-				// Update remaining cash and breakout tracking
-				remainingCash -= orderValue
-				if signal.SignalType == "resistance_breakout" {
-					s.breakoutBars[signal.Symbol] = 1
-				}
-			} else {
-				ctx.Log("warn", "Insufficient cash for signal", map[string]interface{}{
-					"symbol":        signal.Symbol,
-					"requiredValue": orderValue,
-					"remainingCash": remainingCash,
-					"skipping":      true,
-				})
-			}
-		}
-	}
-
-	return orders
 }
 
 // OnFinish is called when the strategy finishes
@@ -864,26 +794,6 @@ func (s *SupportResistanceStrategy) hasVolumeConfirmation(symbol string) bool {
 	avgVolume /= 9
 
 	return currentVolume >= avgVolume*s.volumeMultiplier
-}
-
-// calculateVolatilityAdjustedPositionSize calculates position size adjusted for volatility
-func (s *SupportResistanceStrategy) calculateVolatilityAdjustedPositionSize(symbol string, cash, price, allocation float64) float64 {
-	volatility := s.volatility[symbol]
-
-	// Reduce position size in high volatility environments
-	volatilityAdjustment := 1.0
-	if volatility > 0.03 { // 3% daily volatility
-		volatilityAdjustment = 0.7 // Reduce to 70% of normal size
-	} else if volatility > 0.02 { // 2% daily volatility
-		volatilityAdjustment = 0.85 // Reduce to 85% of normal size
-	}
-
-	adjustedAllocation := allocation * volatilityAdjustment
-	targetValue := cash * adjustedAllocation
-	quantity := targetValue / price
-
-	// Round down to nearest whole number (can't buy fractional shares)
-	return float64(int(quantity))
 }
 
 // Helper functions for reading environment variables
