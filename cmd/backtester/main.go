@@ -122,8 +122,12 @@ func main() {
 		ma := examples.NewMovingAverageCrossoverStrategy(5, 20) // 5-period and 20-period MA
 		ma.SetSymbols(symbols)
 		strategyInstance = ma
+	case "multi_indicator":
+		multi := examples.NewMultiIndicatorStrategy()
+		multi.SetSymbols(symbols)
+		strategyInstance = multi
 	default:
-		logger.Fatal().Str("strategy", *strategyFlag).Msg("Unknown strategy. Available strategies: buy_and_hold, ma_crossover")
+		logger.Fatal().Str("strategy", *strategyFlag).Msg("Unknown strategy. Available strategies: buy_and_hold, ma_crossover, multi_indicator")
 	}
 
 	// Get trading configuration from environment variables
