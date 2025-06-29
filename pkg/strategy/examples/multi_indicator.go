@@ -269,5 +269,7 @@ func (s *MultiIndicatorStrategy) OnFinish(ctx strategy.Context) error {
 // calculatePositionSize calculates the position size based on available cash and target allocation
 func (s *MultiIndicatorStrategy) calculatePositionSize(cash, price, allocation float64) float64 {
 	targetValue := cash * allocation
-	return targetValue / price
+	quantity := targetValue / price
+	// Round down to nearest whole number (can't buy fractional shares)
+	return float64(int(quantity))
 }

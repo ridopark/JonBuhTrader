@@ -232,6 +232,6 @@ func (s *MovingAverageCrossoverStrategy) calculatePositionSize(cash, price, allo
 	targetValue := cash * allocation
 	quantity := targetValue / price
 
-	// Round down to avoid insufficient funds
-	return float64(int(quantity*100)) / 100 // Round to 2 decimal places
+	// Round down to nearest whole number (can't buy fractional shares)
+	return float64(int(quantity))
 }
