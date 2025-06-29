@@ -183,6 +183,7 @@ func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataP
 				Type:     strategy.OrderTypeMarket,
 				Quantity: position.Quantity,
 				Strategy: s.GetName(),
+				Reason:   "bearish_crossover",
 			}
 			orders = append(orders, order)
 			s.position = false
@@ -193,6 +194,7 @@ func (s *MovingAverageCrossoverStrategy) OnDataPoint(ctx strategy.Context, dataP
 				"quantity": position.Quantity,
 				"shortMA":  s.currentShortMA,
 				"longMA":   s.currentLongMA,
+				"reason":   "bearish_crossover",
 			})
 		}
 	}
@@ -214,6 +216,7 @@ func (s *MovingAverageCrossoverStrategy) OnTrade(ctx strategy.Context, trade str
 		"quantity": trade.Quantity,
 		"price":    trade.Price,
 		"strategy": s.GetName(),
+		"reason":   trade.Reason,
 	})
 	return nil
 }

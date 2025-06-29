@@ -153,6 +153,7 @@ func (b *Broker) ExecuteOrder(order strategy.Order, currentBar strategy.BarData)
 		FinraTaf:   finraTaf,
 		Slippage:   slippageCost,
 		Strategy:   order.Strategy,
+		Reason:     order.Reason,
 	}
 
 	return trade, nil

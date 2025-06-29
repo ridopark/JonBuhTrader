@@ -734,6 +734,7 @@ func (s *SupportResistanceStrategy) checkStopLossTakeProfit(symbol string, bar s
 			Type:     strategy.OrderTypeMarket,
 			Quantity: math.Abs(position.Quantity),
 			Strategy: s.GetName(),
+			Reason:   "stop_loss",
 		}
 	}
 
@@ -745,6 +746,7 @@ func (s *SupportResistanceStrategy) checkStopLossTakeProfit(symbol string, bar s
 			Type:     strategy.OrderTypeMarket,
 			Quantity: math.Abs(position.Quantity),
 			Strategy: s.GetName(),
+			Reason:   "take_profit",
 		}
 	}
 

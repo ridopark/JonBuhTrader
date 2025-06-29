@@ -161,6 +161,7 @@ func (s *BaseStrategy) OnTrade(ctx Context, trade TradeEvent) error {
 		"side":     trade.Side,
 		"quantity": trade.Quantity,
 		"price":    trade.Price,
+		"reason":   trade.Reason,
 	})
 	return nil
 }

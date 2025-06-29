@@ -400,10 +400,10 @@ All Trades:
 	// Add detailed trade listing
 	if len(r.Trades) > 0 {
 		summary += "\n"
-		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %-12s %-10s %-8s %-8s %-8s %-10s\n",
-			"#", "Time", "Symbol", "Side", "Quantity", "Price", "Value", "Commission", "SecFee", "FinraTaf", "Slippage", "P&L")
-		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %-12s %-10s %-8s %-8s %-8s %-10s\n",
-			"---", "----------------", "--------", "------", "----------", "----------", "------------", "----------", "--------", "--------", "--------", "----------")
+		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %-12s %-10s %-8s %-8s %-8s %-10s %-20s\n",
+			"#", "Time", "Symbol", "Side", "Quantity", "Price", "Value", "Commission", "SecFee", "FinraTaf", "Slippage", "P&L", "Reason")
+		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %-12s %-10s %-8s %-8s %-8s %-10s %-20s\n",
+			"---", "----------------", "--------", "------", "----------", "----------", "------------", "----------", "--------", "--------", "--------", "----------", "--------------------")
 
 		// Track positions to calculate P&L per trade
 		positionTracker := make(map[string]*PositionTracker)
@@ -436,7 +436,7 @@ All Trades:
 				plStr = fmt.Sprintf("%.2f", tradePL)
 			}
 
-			summary += fmt.Sprintf("%-4d %-16s %-8s %-6s %10.2f %10.2f %12.2f %10.2f %8.2f %8.2f %8.2f %10s\n",
+			summary += fmt.Sprintf("%-4d %-16s %-8s %-6s %10.2f %10.2f %12.2f %10.2f %8.2f %8.2f %8.2f %10s %-20s\n",
 				i+1,
 				timeStr,
 				trade.Symbol,
@@ -449,6 +449,7 @@ All Trades:
 				trade.FinraTaf,
 				trade.Slippage,
 				plStr,
+				trade.Reason,
 			)
 		}
 
@@ -488,10 +489,10 @@ All Trades:
 			}
 		}
 
-		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %-12s %-10s %-8s %-8s %-8s %-10s\n",
-			"---", "----------------", "--------", "------", "----------", "----------", "------------", "----------", "--------", "--------", "--------", "----------")
-		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %12.2f %10.2f %8.2f %8.2f %8.2f %10.2f\n",
-			"", "", "TOTAL", "", "", "", totalValue, totalCommission, totalSecFee, totalFinraTaf, totalSlippage, totalRealizedPL)
+		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %-12s %-10s %-8s %-8s %-8s %-10s %-20s\n",
+			"---", "----------------", "--------", "------", "----------", "----------", "------------", "----------", "--------", "--------", "--------", "----------", "--------------------")
+		summary += fmt.Sprintf("%-4s %-16s %-8s %-6s %-10s %-10s %12.2f %10.2f %8.2f %8.2f %8.2f %10.2f %-20s\n",
+			"", "", "TOTAL", "", "", "", totalValue, totalCommission, totalSecFee, totalFinraTaf, totalSlippage, totalRealizedPL, "")
 	} else {
 		summary += "\nNo trades executed.\n"
 	}

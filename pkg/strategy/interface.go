@@ -50,6 +50,7 @@ type Order struct {
 	StopPrice float64 // For stop orders
 	Timestamp time.Time
 	Strategy  string
+	Reason    string   // Trading reason/signal type
 }
 
 // TradeEvent represents a completed trade
@@ -66,6 +67,7 @@ type TradeEvent struct {
 	FinraTaf   float64 // FINRA Trading Activity Fee
 	Slippage   float64 // Slippage cost
 	Strategy   string
+	Reason     string  // Trading reason/signal type
 }
 
 // Position represents a current position in a symbol

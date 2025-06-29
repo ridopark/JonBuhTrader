@@ -213,6 +213,7 @@ func (e *Engine) CloseAllPostionsAtEnd() {
 			Side:     orderSide,
 			Quantity: quantity,
 			Type:     strategy.OrderTypeMarket,
+			Reason:   "end_of_backtest_liquidation",
 		}
 
 		// Create a synthetic bar for liquidation at the last known price

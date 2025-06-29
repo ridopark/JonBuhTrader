@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ridopark/JonBuhTrader/pkg/backtester"
@@ -146,8 +147,8 @@ func main() {
 		if trade.Side == "BUY" {
 			buyTradeValue += tradeValue
 		}
-		fmt.Printf("  %s %s: %.2f shares @ $%.2f = $%.2f\n",
-			trade.Side, trade.Symbol, trade.Quantity, trade.Price, tradeValue)
+		fmt.Printf("  %s %s: %.2f shares @ $%.2f = $%.2f (%s)\n",
+			trade.Side, trade.Symbol, trade.Quantity, trade.Price, tradeValue, trade.Reason)
 	}
 
 	fmt.Printf("\nTotal BUY trade value: $%.2f\n", buyTradeValue)
@@ -160,4 +161,10 @@ func main() {
 	}
 
 	fmt.Println("\nTest completed!")
+	
+	// Print the full backtester summary to verify the reason field
+	fmt.Println("\n" + strings.Repeat("=", 80))
+	fmt.Println("BACKTESTER SUMMARY WITH REASON FIELD:")
+	fmt.Println(strings.Repeat("=", 80))
+	fmt.Println(results.Summary())
 }

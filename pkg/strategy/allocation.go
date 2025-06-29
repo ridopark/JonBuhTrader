@@ -187,6 +187,7 @@ func (ca *CapitalAllocator) allocateEqually(ctx Context, signals []TradingSignal
 				Type:     OrderTypeMarket,
 				Quantity: quantity,
 				Strategy: strategyName,
+				Reason:   signal.GetSignalType(),
 			}
 			orders = append(orders, order)
 
@@ -197,6 +198,7 @@ func (ca *CapitalAllocator) allocateEqually(ctx Context, signals []TradingSignal
 				"cost":       cost,
 				"allocation": allocationPerSignal,
 				"confidence": signal.GetConfidence(),
+				"reason":     signal.GetSignalType(),
 			})
 		}
 	}
@@ -243,6 +245,7 @@ func (ca *CapitalAllocator) allocateByConfidence(ctx Context, signals []TradingS
 					Type:     OrderTypeMarket,
 					Quantity: quantity,
 					Strategy: strategyName,
+					Reason:   signal.GetSignalType(),
 				}
 				orders = append(orders, order)
 				remainingCash -= cost
@@ -255,6 +258,7 @@ func (ca *CapitalAllocator) allocateByConfidence(ctx Context, signals []TradingS
 					"allocation":     allocation,
 					"confidence":     signal.GetConfidence(),
 					"remaining_cash": remainingCash,
+					"reason":         signal.GetSignalType(),
 				})
 			}
 		}
@@ -302,6 +306,7 @@ func (ca *CapitalAllocator) allocateByPriority(ctx Context, signals []TradingSig
 					Type:     OrderTypeMarket,
 					Quantity: quantity,
 					Strategy: strategyName,
+					Reason:   signal.GetSignalType(),
 				}
 				orders = append(orders, order)
 				remainingCash -= cost
@@ -314,6 +319,7 @@ func (ca *CapitalAllocator) allocateByPriority(ctx Context, signals []TradingSig
 					"allocation":     allocation,
 					"priority":       signal.GetPriority(),
 					"remaining_cash": remainingCash,
+					"reason":         signal.GetSignalType(),
 				})
 			}
 		}
@@ -348,6 +354,7 @@ func (ca *CapitalAllocator) allocateSequential(ctx Context, signals []TradingSig
 					Type:     OrderTypeMarket,
 					Quantity: quantity,
 					Strategy: strategyName,
+					Reason:   signal.GetSignalType(),
 				}
 				orders = append(orders, order)
 				remainingCash -= cost
@@ -360,6 +367,7 @@ func (ca *CapitalAllocator) allocateSequential(ctx Context, signals []TradingSig
 					"allocation":     allocation,
 					"confidence":     signal.GetConfidence(),
 					"remaining_cash": remainingCash,
+					"reason":         signal.GetSignalType(),
 				})
 			} else {
 				ctx.Log("debug", "Insufficient cash for signal", map[string]interface{}{

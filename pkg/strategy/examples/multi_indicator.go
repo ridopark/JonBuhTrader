@@ -269,6 +269,7 @@ func (s *MultiIndicatorStrategy) OnDataPoint(ctx strategy.Context, dataPoint str
 					Type:     strategy.OrderTypeMarket,
 					Quantity: positionQuantity,
 					Strategy: s.GetName(),
+					Reason:   "multi_indicator_sell",
 				}
 				orders = append(orders, order)
 
@@ -278,6 +279,7 @@ func (s *MultiIndicatorStrategy) OnDataPoint(ctx strategy.Context, dataPoint str
 					"quantity":    positionQuantity,
 					"sellSignals": sellSignals,
 					"rsi":         rsi,
+					"reason":      "multi_indicator_sell",
 				})
 			}
 		}
